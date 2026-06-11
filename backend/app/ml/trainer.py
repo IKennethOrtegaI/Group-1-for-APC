@@ -1,8 +1,10 @@
 import time
 import joblib
 import numpy as np
+from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
@@ -16,23 +18,23 @@ ALL_MODELS = ["random_forest", "xgboost", "svm", "mlp"]
 
 MODELS = {
     "random_forest": RandomForestClassifier(
-        n_estimators=100, max_depth=20, n_jobs=-1, random_state=42
+        n_estimators=60, max_depth=18, n_jobs=-1, random_state=42
     ),
     "xgboost": XGBClassifier(
-        n_estimators=200, learning_rate=0.1, max_depth=6,
+        n_estimators=100, learning_rate=0.15, max_depth=6,
         use_label_encoder=False, eval_metric="logloss",
-        n_jobs=-1, random_state=42
+        n_jobs=-1, random_state=42, tree_method="hist",
     ),
-    "svm": SVC(
-        kernel="rbf", C=10, gamma="scale",
-        probability=True, random_state=42, cache_size=500
+    # LinearSVC es 10-20x más rápido que SVC(kernel=rbf) con precisión similar
+    "svm": CalibratedClassifierCV(
+        LinearSVC(C=1.0, max_iter=2000, random_state=42), cv=3
     ),
     "mlp": MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
         activation="relu", solver="adam",
-        max_iter=200, random_state=42,
+        max_iter=150, random_state=42,
         early_stopping=True, validation_fraction=0.1,
-        learning_rate_init=0.001,
+        learning_rate_init=0.001, n_iter_no_change=10,
     ),
 }
 
@@ -40,56 +42,42 @@ MODEL_INFO = {
     "random_forest": {
         "full_name": "Random Forest",
         "type": "Ensemble / Árboles de Decisión",
-        "params": "100 estimadores, max_depth=20",
+        "params": "60 estimadores, max_depth=18",
         "strengths": ["Alta precisión", "Robusto a outliers", "Importancia de features"],
         "weaknesses": ["Lento en predicción con muchos árboles", "Alto uso de memoria"],
     },
     "xgboost": {
         "full_name": "XGBoost",
         "type": "Gradient Boosting",
-        "params": "200 estimadores, lr=0.1, depth=6",
+        "params": "100 estimadores, lr=0.15, depth=6, hist",
         "strengths": ["Máxima precisión", "Regularización integrada", "Rápido"],
         "weaknesses": ["Muchos hiperparámetros", "Difícil de interpretar"],
     },
     "svm": {
         "full_name": "Support Vector Machine",
-        "type": "Kernel RBF / Máquinas de Soporte Vectorial",
-        "params": "C=10, gamma=scale, kernel=rbf",
-        "strengths": ["Excelente en alta dimensión", "Resistente a overfitting", "Sólido en papers IDS"],
-        "weaknesses": ["Muy lento en datasets grandes", "No escala bien"],
+        "type": "LinearSVC calibrado",
+        "params": "C=1.0, max_iter=2000",
+        "strengths": ["Muy rápido", "Resistente a overfitting", "Sólido en papers IDS"],
+        "weaknesses": ["Menos preciso que kernel RBF en datos no lineales"],
     },
     "mlp": {
         "full_name": "Red Neuronal (MLP)",
         "type": "Multi-Layer Perceptron / Deep Learning",
-        "params": "Capas: 128→64→32, ReLU, Adam",
+        "params": "Capas: 128→64→32, ReLU, Adam, early_stopping",
         "strengths": ["Aprende patrones no lineales", "Flexible", "Escalable"],
-        "weaknesses": ["Requiere normalización estricta", "Caja negra", "Más lento de entrenar"],
+        "weaknesses": ["Requiere normalización estricta", "Caja negra"],
     },
 }
 
-
-def compute_metrics(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred).tolist()
-    tn = cm[0][0] if len(cm) > 1 else 0
-    fp = cm[0][1] if len(cm) > 1 else 0
-    fn = cm[1][0] if len(cm) > 1 else 0
-    tp = cm[1][1] if len(cm) > 1 else 0
-    fpr = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0
-    return {
-        "accuracy":         round(accuracy_score(y_true, y_pred), 4),
-        "f1_score":         round(f1_score(y_true, y_pred, average="weighted", zero_division=0), 4),
-        "precision":        round(precision_score(y_true, y_pred, average="weighted", zero_division=0), 4),
-        "recall":           round(recall_score(y_true, y_pred, average="weighted", zero_division=0), 4),
-        "confusion_matrix": cm,
-        "false_positive_rate": fpr,
-        "true_positives":   tp,
-        "false_positives":  fp,
-        "true_negatives":   tn,
-        "false_negatives":  fn,
-    }
+# ── Cache de datos preprocesados en memoria (evita releer CSV + SMOTE por cada modelo) ──
+_DATA_CACHE: dict = {}
 
 
-def _load_data(dataset):
+def _get_preprocessed(dataset: str):
+    """Carga, preprocesa y aplica SMOTE una sola vez; reutiliza en entrenamientos posteriores."""
+    if dataset in _DATA_CACHE:
+        return _DATA_CACHE[dataset]
+
     data_dir = settings.DATA_DIR
     if dataset == "nslkdd":
         df = load_nsl_kdd(data_dir)
@@ -102,14 +90,6 @@ def _load_data(dataset):
         split_idx = int(len(df) * 0.8)
         X_train, y_train, _, encoders = preprocess(df.iloc[:split_idx], dataset, fit=True)
         X_test,  y_test,  _, _        = preprocess(df.iloc[split_idx:], dataset, fit=False, encoders=encoders)
-    return X_train, y_train, X_test, y_test, encoders
-
-
-def train_and_save(dataset: str, model_name: str, db_session=None):
-    models_dir = settings.MODELS_DIR
-    models_dir.mkdir(exist_ok=True)
-
-    X_train, y_train, X_test, y_test, encoders = _load_data(dataset)
 
     try:
         sm = SMOTE(random_state=42)
@@ -117,23 +97,57 @@ def train_and_save(dataset: str, model_name: str, db_session=None):
     except Exception:
         pass
 
-    # For SVM, subsample if too large (speed)
-    if model_name == "svm" and len(X_train) > 30000:
-        idx = np.random.choice(len(X_train), 30000, replace=False)
-        X_train, y_train = X_train[idx], y_train[idx]
+    _DATA_CACHE[dataset] = (X_train, y_train, X_test, y_test, encoders)
+    return _DATA_CACHE[dataset]
+
+
+def compute_metrics(y_true, y_pred):
+    cm = confusion_matrix(y_true, y_pred).tolist()
+    tn = cm[0][0] if len(cm) > 1 else 0
+    fp = cm[0][1] if len(cm) > 1 else 0
+    fn = cm[1][0] if len(cm) > 1 else 0
+    tp = cm[1][1] if len(cm) > 1 else 0
+    fpr = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0
+    return {
+        "accuracy":            round(accuracy_score(y_true, y_pred), 4),
+        "f1_score":            round(f1_score(y_true, y_pred, average="weighted", zero_division=0), 4),
+        "precision":           round(precision_score(y_true, y_pred, average="weighted", zero_division=0), 4),
+        "recall":              round(recall_score(y_true, y_pred, average="weighted", zero_division=0), 4),
+        "confusion_matrix":    cm,
+        "false_positive_rate": fpr,
+        "true_positives":      tp,
+        "false_positives":     fp,
+        "true_negatives":      tn,
+        "false_negatives":     fn,
+    }
+
+
+def train_and_save(dataset: str, model_name: str, db_session=None):
+    models_dir = settings.MODELS_DIR
+    models_dir.mkdir(exist_ok=True)
+
+    X_train, y_train, X_test, y_test, encoders = _get_preprocessed(dataset)
+
+    # SVM: subsample para mayor velocidad (LinearSVC ya es mucho más rápido, 50K es seguro)
+    X_tr, y_tr = X_train, y_train
+    if model_name == "svm" and len(X_tr) > 50000:
+        idx = np.random.choice(len(X_tr), 50000, replace=False)
+        X_tr, y_tr = X_tr[idx], y_tr[idx]
 
     model_template = MODELS[model_name]
-    model = model_template.__class__(**model_template.get_params())
+    # Clonar modelo para no contaminar el template
+    import copy
+    model = copy.deepcopy(model_template)
 
     start = time.time()
-    model.fit(X_train, y_train)
+    model.fit(X_tr, y_tr)
     training_time = round(time.time() - start, 2)
 
     y_pred = model.predict(X_test)
     metrics = compute_metrics(y_test, y_pred)
     metrics.update({
         "training_time": training_time,
-        "n_samples":     int(len(X_train)),
+        "n_samples":     int(len(X_tr)),
         "dataset":       dataset,
         "model_name":    model_name,
         "model_info":    MODEL_INFO.get(model_name, {}),
