@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #060910;
+  --surface: #0c1018;
+  --surface2: #111722;
+  --border: #1c2333;
+  --text: #cdd9e5;
+  --muted: #545d68;
+  --blue: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --purple: #a371f7;
+  --cyan: #39d353;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes flicker {
+  0%,100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.6; }
+  94% { opacity: 1; }
+  96% { opacity: 0.8; }
+  97% { opacity: 1; }
+}
+
+@keyframes nodeAttack {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ripple {
+  0%   { r: 0; opacity: 0.6; }
+  100% { r: 40; opacity: 0; }
+}
+
+@keyframes counterUp {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glitch {
+  0%,100%  { clip-path: none; transform: none; }
+  20%      { clip-path: inset(30% 0 50% 0); transform: translate(-2px, 0); }
+  40%      { clip-path: inset(70% 0 10% 0); transform: translate(2px, 0); }
+  60%      { clip-path: none; }
+}
+
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.fade-up   { animation: fadeSlideUp 0.25s ease forwards; }
+.flicker   { animation: flicker 8s infinite; }
+.glitch    { animation: glitch 0.4s steps(2) 1; }
+
+.glass {
+  background: rgba(12, 16, 24, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.neon-border-blue { box-shadow: 0 0 0 1px rgba(88,166,255,0.3), inset 0 0 20px rgba(88,166,255,0.03); }
+.neon-border-red  { box-shadow: 0 0 0 1px rgba(248,81,73,0.4),  inset 0 0 20px rgba(248,81,73,0.05); }
+.neon-border-green{ box-shadow: 0 0 0 1px rgba(63,185,80,0.3),  inset 0 0 20px rgba(63,185,80,0.03); }

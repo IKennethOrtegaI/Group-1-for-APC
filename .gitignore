@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
+
+# Models & datasets (too large for git)
+backend/data/raw/
+backend/models/
+*.pkl
+ids.db
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/tsconfig*.tsbuildinfo
+
+# Docker volumes
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
