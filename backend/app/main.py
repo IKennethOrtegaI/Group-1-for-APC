@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.database import init_db
-from app.api.routes import models, alerts
+from app.api.routes import models, alerts, monitor
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -20,6 +20,7 @@ app.add_middleware(
 
 app.include_router(models.router)
 app.include_router(alerts.router)
+app.include_router(monitor.router)
 
 
 @app.on_event("startup")

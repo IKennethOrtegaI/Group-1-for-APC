@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Shield, Activity, BarChart2, Terminal as TermIcon,
-  Upload, Cpu, X, ChevronRight,
+  Upload, Cpu, X, ChevronRight, Wifi,
 } from "lucide-react";
 import NetworkMap       from "./components/NetworkMap";
 import ThreatRadar      from "./components/ThreatRadar";
@@ -11,6 +11,7 @@ import PredictSimulator from "./components/PredictSimulator";
 import BatchUpload      from "./components/BatchUpload";
 import ModelComparison  from "./components/ModelComparison";
 import SplashScreen     from "./components/SplashScreen";
+import NetworkMonitor   from "./components/NetworkMonitor";
 import { getAlertStats } from "./api/client";
 
 // ── Side panels config ──────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ const PANELS = [
   { id: "predict",     label: "Predictor",   icon: TermIcon,  color: "#a371f7" },
   { id: "batch",       label: "CSV",         icon: Upload,    color: "#3fb950" },
   { id: "comparativa", label: "Comparativa", icon: BarChart2, color: "#d29922" },
+  { id: "monitor",     label: "Monitor",     icon: Wifi,      color: "#ff7b72" },
 ];
 
 // ── KPI Chip ────────────────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ const PANEL_TITLES = {
   predict:     "Predictor de Tráfico",
   batch:       "Análisis por Lote (CSV)",
   comparativa: "Análisis Comparativo de Modelos",
+  monitor:     "Monitor de Red en Tiempo Real",
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -213,6 +216,11 @@ export default function App() {
                 {activePanel === "comparativa" && (
                   <div className="max-w-5xl mx-auto">
                     <ModelComparison dataset={dataset} refreshKey={refreshKey}/>
+                  </div>
+                )}
+                {activePanel === "monitor" && (
+                  <div className="max-w-4xl mx-auto h-full">
+                    <NetworkMonitor />
                   </div>
                 )}
               </div>
