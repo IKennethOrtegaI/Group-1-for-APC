@@ -15,8 +15,31 @@ export default function TrainPanel({ dataset = "nslkdd", onTrained }) {
   const [metrics, setMetrics] = useState(null);
   const [polling, setPolling] = useState(false);
 
-  // Reset when dataset changes
-  useEffect(() => { setStatus(null); setMetrics(null); setPolling(false); }, [dataset]);
+  // Al montar o cambiar modelo/dataset: consultar estado actual en el backend
+  useEffect(() => {
+    let cancelled = false;
+    const checkCurrent = async () => {
+      try {
+        const res = await getTrainStatus(dataset, model);
+        if (cancelled) return;
+        const s = res.data.status;
+        if (s?.status === "done") {
+          setStatus("done"); setMetrics(s.metrics); setPolling(false);
+        } else if (s?.status === "error") {
+          setStatus("error"); setPolling(false);
+        } else if (s?.status === "training" || s?.status === "queued") {
+          // entrenamiento en curso aunque hayamos cambiado de pestaña — reanudar polling
+          setStatus("training"); setPolling(true);
+        } else {
+          setStatus(null); setMetrics(null); setPolling(false);
+        }
+      } catch {
+        setStatus(null); setPolling(false);
+      }
+    };
+    checkCurrent();
+    return () => { cancelled = true; };
+  }, [dataset, model]);
 
   const handleTrain = async () => {
     setStatus("queued");

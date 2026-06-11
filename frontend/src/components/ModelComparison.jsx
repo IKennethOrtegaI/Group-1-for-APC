@@ -89,6 +89,27 @@ function TrainAllButton({ dataset, onDone }) {
   const [status, setStatus] = useState({}); // model → "idle"|"training"|"done"|"error"
   const models = ["random_forest", "xgboost", "svm", "mlp"];
 
+  // Al montar: recuperar estados del backend para sobrevivir cambios de pestaña
+  useEffect(() => {
+    let cancelled = false;
+    const recover = async () => {
+      const updates = {};
+      await Promise.all(models.map(async (m) => {
+        try {
+          const r = await getTrainStatus(dataset, m);
+          const st = r.data?.status;
+          const s = typeof st === "object" ? st?.status : st;
+          if (s === "done")     updates[m] = "done";
+          else if (s === "error") updates[m] = "error";
+          else if (s === "training" || s === "queued") updates[m] = "training";
+        } catch {}
+      }));
+      if (!cancelled && Object.keys(updates).length > 0) setStatus(updates);
+    };
+    recover();
+    return () => { cancelled = true; };
+  }, [dataset]);
+
   const trainAll = async () => {
     for (const m of models) {
       setStatus(s => ({ ...s, [m]: "training" }));
