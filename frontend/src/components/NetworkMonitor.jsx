@@ -257,11 +257,11 @@ export default function NetworkMonitor() {
               />
             </div>
             <select value={model} onChange={e => setModel(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded px-2 text-white/70 text-xs">
-              {MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
+              {MODELS.map(m => <option key={m.value} value={m.value} style={{ background: "#0d1117", color: "#cdd9e5" }}>{m.label}</option>)}
             </select>
             <select value={count} onChange={e => setCount(Number(e.target.value))}
-              className="bg-white/5 border border-white/10 rounded px-2 text-white/70 text-xs">
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
               {[1,3,5,10].map(n => <option key={n} value={n}>{n} sondeos</option>)}
             </select>
             <button onClick={runProbe} disabled={loading || !target.trim()}
@@ -393,11 +393,11 @@ export default function NetworkMonitor() {
               />
             </div>
             <select value={simModel} onChange={e => setSimModel(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded px-2 text-white/70 text-xs">
-              {MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
+              {MODELS.map(m => <option key={m.value} value={m.value} style={{ background: "#0d1117", color: "#cdd9e5" }}>{m.label}</option>)}
             </select>
             <select value={simIntensity} onChange={e => setSimIntensity(Number(e.target.value))}
-              className="bg-white/5 border border-white/10 rounded px-2 text-white/70 text-xs">
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
               {[3,5,8,10,15].map(n => <option key={n} value={n}>{n} muestras</option>)}
             </select>
             <button onClick={runSim} disabled={simLoading || !simTarget.trim()}
