@@ -439,7 +439,7 @@ export default function NetworkMonitor() {
                   </div>
                 </div>
               </div>
-              <div className="flex-1 overflow-auto">
+              <div className="mt-2">
                 <div className="text-[9px] text-white/25 font-mono uppercase mb-2">Pasos de la simulación</div>
                 {simResult.steps.map((s, i) => <SimStepRow key={i} step={s} />)}
               </div>
