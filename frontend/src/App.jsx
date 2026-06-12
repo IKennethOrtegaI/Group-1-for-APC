@@ -16,13 +16,15 @@ import LiveCapture      from "./components/LiveCapture";
 import { getAlertStats } from "./api/client";
 
 // ── Side panels config ──────────────────────────────────────────────────────
+const IS_LOCAL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+
 const PANELS = [
   { id: "train",       label: "Entrenar",    icon: Cpu,       color: "#58a6ff" },
   { id: "predict",     label: "Predictor",   icon: TermIcon,  color: "#a371f7" },
   { id: "batch",       label: "CSV",         icon: Upload,    color: "#3fb950" },
   { id: "comparativa", label: "Comparativa", icon: BarChart2, color: "#d29922" },
   { id: "monitor",     label: "Monitor",     icon: Wifi,      color: "#ff7b72" },
-  { id: "captura",    label: "Captura Live", icon: Activity,  color: "#39d353" },
+  ...(IS_LOCAL ? [{ id: "captura", label: "Captura Live", icon: Activity, color: "#39d353" }] : []),
 ];
 
 // ── KPI Chip ────────────────────────────────────────────────────────────────
