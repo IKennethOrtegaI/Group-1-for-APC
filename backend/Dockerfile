@@ -14,9 +14,6 @@ COPY app/ ./app/
 # Pre-trained models — baked into image, no retraining needed on server
 COPY models/ ./models/
 
-# Raw datasets (only needed if retraining is triggered manually)
-COPY data/raw/ ./data/raw/
-
 # Pre-seeded SQLite DB with training run records and metrics
 COPY ids.db ./ids.db
 
