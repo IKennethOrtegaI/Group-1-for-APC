@@ -277,6 +277,15 @@ def _load_real_samples(dataset: str, mode: str) -> list:
     return result
 
 
+def _get_scaler(dataset: str):
+    try:
+        from app.ml.trainer import load_model
+        artifact = load_model(dataset, "random_forest")
+        return artifact.get("encoders", {}).get("scaler")
+    except Exception:
+        return None
+
+
 def _try_load_from_csv(dataset: str, mode: str) -> list:
     try:
         import pandas as pd, os
@@ -320,7 +329,11 @@ def _try_load_from_csv(dataset: str, mode: str) -> list:
             data_path = os.path.join(os.path.dirname(__file__), "../../../data/raw/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv")
             if not os.path.exists(data_path):
                 return []
-            df = pd.read_csv(data_path, low_memory=False, nrows=5000)
+            # DDoS samples start after row ~97718 — load from there directly
+            df = pd.read_csv(data_path, low_memory=False, skiprows=range(1, 98000), nrows=500)
+            # re-attach header
+            header_df = pd.read_csv(data_path, low_memory=False, nrows=0)
+            df.columns = header_df.columns
             df.columns = df.columns.str.strip()
             df = df.replace([float("inf"), float("-inf")], float("nan")).dropna()
             label_col = " Label" if " Label" in df.columns else "Label"
@@ -339,8 +352,7 @@ def _try_load_from_csv(dataset: str, mode: str) -> list:
 def _get_embedded_samples(dataset: str, mode: str) -> list:
     """
     Embedded representative attack vectors derived from published NSL-KDD/CICIDS2017
-    dataset statistics. Used as fallback when CSV files are not available.
-    These are pre-scaled (mean≈0, std≈1) approximate feature vectors.
+    dataset statistics. Applies the trained StandardScaler before returning.
     """
     import numpy as np
     rng = np.random.default_rng(42)
@@ -356,29 +368,38 @@ def _get_embedded_samples(dataset: str, mode: str) -> list:
             base = [0,1,5,2, 8,0, 0,0,0, 0,0,0,0, 0,0,0,0,0,0,0, 0,0,
                     50,2, 0.0,0.0, 0.8,0.8, 0.04,0.96,0.0,
                     255,3, 0.01,0.99,0.01,0.0, 0.0,0.0,0.8,0.8]
-        samples = []
+        rows = []
         for _ in range(15):
             noise = rng.normal(0, 0.05, len(base))
-            samples.append([max(0, v + n) for v, n in zip(base, noise)])
-        return samples
+            rows.append([max(0, v + n) for v, n in zip(base, noise)])
 
     else:  # cicids ddos
-        # DDoS CICIDS2017: high flow rate, large total bytes, many fwd packets
-        # 78 features — key ones: Flow Duration low, Total Fwd Packets high,
-        # Flow Bytes/s high, Fwd Packet Length mean low (small packets = amplification)
+        # DDoS CICIDS2017 Friday dataset statistics (mean values from published paper)
+        # Features: Flow Duration, Total Fwd/Bwd Packets, Total Fwd/Bwd Bytes,
+        # Fwd/Bwd Packet Length stats, Flow Bytes/s, Flow Packets/s, ...
         base = [
-            1000, 1000, 0, 64000, 0, 0, 64,64,64,64, 0,0,0,0, 64,64,64,0,
-            0,0,0,0, 0,0,0,0, 64000000,1000000, 1,0,0,0,
-            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0, 0,0,255,255,
-            1,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-            0,0,0,0,0,0
+            1000, 1000, 0, 64000, 0, 0, 64,64,64,64,
+            0,0,0,0, 64,64,64,0, 0,0,0,0, 0,0,0,0,
+            64000000, 1000000, 1,0,0,0, 0,0,0,0,
+            0,0,0,0, 0,0,0,0, 0,0, 0,0,255,255,
+            1,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+            0,0,0,0, 0,0,0,0,0,0
         ]
         base = base[:78]
-        samples = []
+        rows = []
         for _ in range(15):
-            noise = rng.normal(0, 0.1, len(base))
-            samples.append([max(0, v + abs(v) * n) for v, n in zip(base, noise)])
-        return samples
+            noise = rng.normal(0, 0.05, len(base))
+            rows.append([max(0, v + abs(v+1) * n) for v, n in zip(base, noise)])
+
+    # Apply StandardScaler fitted during training
+    arr = np.array(rows, dtype=float)
+    scaler = _get_scaler(dataset)
+    if scaler is not None:
+        try:
+            arr = scaler.transform(arr)
+        except Exception:
+            pass
+    return arr.tolist()
 
 
 # ── Probe endpoint ─────────────────────────────────────────────────────────────
