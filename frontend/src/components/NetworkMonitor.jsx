@@ -257,12 +257,12 @@ export default function NetworkMonitor() {
               />
             </div>
             <select value={model} onChange={e => setModel(e.target.value)}
-              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}>
               {MODELS.map(m => <option key={m.value} value={m.value} style={{ background: "#0d1117", color: "#cdd9e5" }}>{m.label}</option>)}
             </select>
             <select value={count} onChange={e => setCount(Number(e.target.value))}
-              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
-              {[1,3,5,10].map(n => <option key={n} value={n}>{n} sondeos</option>)}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}>
+              {[1,3,5,10].map(n => <option key={n} value={n} style={{ background: "#0d1117", color: "#cdd9e5" }}>{n} sondeos</option>)}
             </select>
             <button onClick={runProbe} disabled={loading || !target.trim()}
               className="flex items-center gap-1.5 px-4 py-2 rounded text-xs font-bold transition disabled:opacity-40"
@@ -393,12 +393,12 @@ export default function NetworkMonitor() {
               />
             </div>
             <select value={simModel} onChange={e => setSimModel(e.target.value)}
-              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}>
               {MODELS.map(m => <option key={m.value} value={m.value} style={{ background: "#0d1117", color: "#cdd9e5" }}>{m.label}</option>)}
             </select>
             <select value={simIntensity} onChange={e => setSimIntensity(Number(e.target.value))}
-              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}
-              {[3,5,8,10,15].map(n => <option key={n} value={n}>{n} muestras</option>)}
+              className="rounded px-2 text-xs" style={{ background: "#0d1117", border: "1px solid rgba(255,255,255,0.1)", color: "#cdd9e5" }}>
+              {[3,5,8,10,15].map(n => <option key={n} value={n} style={{ background: "#0d1117", color: "#cdd9e5" }}>{n} muestras</option>)}
             </select>
             <button onClick={runSim} disabled={simLoading || !simTarget.trim()}
               className="flex items-center gap-1.5 px-4 py-2 rounded text-xs font-bold transition disabled:opacity-40"
