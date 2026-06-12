@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { trainModel, getTrainStatus } from "../api/client";
-import { Play, Loader2, CheckCircle2, AlertCircle, Cpu } from "lucide-react";
+import { Play, Loader2, CheckCircle2, AlertCircle, Cpu, Lock } from "lucide-react";
+
+const IS_LOCAL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 
 const MODELS = [
   { value: "random_forest", label: "Random Forest",  sub: "100 árboles · max_depth=20",          color: "#58a6ff" },
@@ -92,17 +94,36 @@ export default function TrainPanel({ dataset = "nslkdd", onTrained }) {
         </div>
       </div>
 
+      {/* Production notice */}
+      {!IS_LOCAL && (
+        <div className="rounded-xl p-4 flex items-start gap-3"
+          style={{ background: "rgba(88,166,255,0.05)", border: "1px solid rgba(88,166,255,0.2)" }}>
+          <Lock size={14} style={{ color: "#58a6ff", marginTop: 1, flexShrink: 0 }}/>
+          <div>
+            <p className="text-[12px] font-semibold" style={{ color: "#58a6ff" }}>
+              Modelos ya entrenados y desplegados
+            </p>
+            <p className="text-[11px] mt-1" style={{ color: "#545d68" }}>
+              Los 8 modelos (NSL-KDD + CICIDS2017) están pre-entrenados en el servidor.
+              Ve a <strong style={{ color: "#d29922" }}>Comparativa</strong> para ver métricas, ROC curves y confusion matrices.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Train button */}
-      <button onClick={handleTrain} disabled={polling}
+      <button onClick={handleTrain} disabled={polling || !IS_LOCAL}
         className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-semibold text-[13px] transition-all"
         style={{
-          background: polling ? "rgba(88,166,255,0.05)" : "rgba(88,166,255,0.1)",
-          border: `1px solid ${polling ? "#1c2333" : "rgba(88,166,255,0.4)"}`,
-          color: polling ? "#545d68" : "#58a6ff",
-          cursor: polling ? "not-allowed" : "pointer",
+          background: (!IS_LOCAL || polling) ? "rgba(88,166,255,0.03)" : "rgba(88,166,255,0.1)",
+          border: `1px solid ${(!IS_LOCAL || polling) ? "#1c2333" : "rgba(88,166,255,0.4)"}`,
+          color: (!IS_LOCAL || polling) ? "#3a4455" : "#58a6ff",
+          cursor: (!IS_LOCAL || polling) ? "not-allowed" : "pointer",
         }}>
         {polling
           ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }}/> Entrenando {selected?.label}…</>
+          : !IS_LOCAL
+          ? <><Lock size={14}/> Entrenamiento deshabilitado en producción</>
           : <><Play size={14} fill="currentColor"/> Entrenar {selected?.label} en {dataset === "nslkdd" ? "NSL-KDD" : "CICIDS2017"}</>
         }
       </button>
