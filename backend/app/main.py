@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.database import init_db
-from app.api.routes import models, alerts, monitor
+from app.api.routes import models, alerts, monitor, capture
 
 # URLs públicas de los datasets (NSL-KDD desde repositorio oficial en GitHub)
 DATASETS = {
@@ -49,6 +49,7 @@ app.add_middleware(
 app.include_router(models.router)
 app.include_router(alerts.router)
 app.include_router(monitor.router)
+app.include_router(capture.router)
 
 
 @app.on_event("startup")

@@ -12,6 +12,7 @@ import BatchUpload      from "./components/BatchUpload";
 import ModelComparison  from "./components/ModelComparison";
 import SplashScreen     from "./components/SplashScreen";
 import NetworkMonitor   from "./components/NetworkMonitor";
+import LiveCapture      from "./components/LiveCapture";
 import { getAlertStats } from "./api/client";
 
 // ── Side panels config ──────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ const PANELS = [
   { id: "batch",       label: "CSV",         icon: Upload,    color: "#3fb950" },
   { id: "comparativa", label: "Comparativa", icon: BarChart2, color: "#d29922" },
   { id: "monitor",     label: "Monitor",     icon: Wifi,      color: "#ff7b72" },
+  { id: "captura",    label: "Captura Live", icon: Activity,  color: "#39d353" },
 ];
 
 // ── KPI Chip ────────────────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ const PANEL_TITLES = {
   batch:       "Análisis por Lote (CSV)",
   comparativa: "Análisis Comparativo de Modelos",
   monitor:     "Monitor de Red en Tiempo Real",
+  captura:     "Captura de Paquetes en Vivo — NSL-KDD Features",
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -221,6 +224,11 @@ export default function App() {
                 {activePanel === "monitor" && (
                   <div className="max-w-4xl mx-auto h-full">
                     <NetworkMonitor />
+                  </div>
+                )}
+                {activePanel === "captura" && (
+                  <div className="max-w-5xl mx-auto">
+                    <LiveCapture dataset={dataset}/>
                   </div>
                 )}
               </div>

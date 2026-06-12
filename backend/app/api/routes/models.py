@@ -1,7 +1,11 @@
+import io
+import csv
+import json
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
 from app.db.database import get_db, TrainingRun
 from app.ml.trainer import train_and_save, load_model, compute_metrics, MODEL_INFO, ALL_MODELS
 from app.ml.preprocessor import preprocess
@@ -10,7 +14,7 @@ import numpy as np
 router = APIRouter(prefix="/models", tags=["Models"])
 
 VALID_DATASETS = {"nslkdd", "cicids"}
-VALID_MODELS = {"random_forest", "xgboost", "svm", "mlp"}
+VALID_MODELS   = {"random_forest", "xgboost", "svm", "mlp"}
 
 training_status: dict = {}
 
@@ -68,24 +72,21 @@ def predict(req: PredictRequest, db: Session = Depends(get_db)):
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
 
-    model = artifact["model"]
+    model    = artifact["model"]
     encoders = artifact["encoders"]
     expected = len(encoders.get("feature_cols", req.features))
 
     features = np.array(req.features[:expected]).reshape(1, -1)
-    scaler = encoders.get("scaler")
+    scaler   = encoders.get("scaler")
     if scaler:
         features = scaler.transform(features)
 
-    pred = int(model.predict(features)[0])
-    proba = model.predict_proba(features)[0]
+    pred       = int(model.predict(features)[0])
+    proba      = model.predict_proba(features)[0]
     confidence = round(float(max(proba)), 4)
+    result     = "Attack" if pred == 1 else "Normal"
 
-    result = "Attack" if pred == 1 else "Normal"
-
-    # Persist to DB
     from app.db.database import Prediction
-    import json
     record = Prediction(
         dataset=req.dataset,
         model_name=req.model_name,
@@ -97,33 +98,45 @@ def predict(req: PredictRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "prediction": result,
-        "confidence": confidence,
+        "prediction":    result,
+        "confidence":    confidence,
         "probabilities": {"normal": round(float(proba[0]), 4), "attack": round(float(proba[1]), 4)},
+    }
+
+
+def _run_to_dict(run: TrainingRun) -> dict:
+    return {
+        "model_name":          run.model_name,
+        "accuracy":            run.accuracy,
+        "f1_score":            run.f1_score,
+        "precision":           run.precision,
+        "recall":              run.recall,
+        "training_time":       run.training_time,
+        "n_samples":           run.n_samples,
+        "false_positive_rate": run.false_positive_rate,
+        "roc_auc":             run.roc_auc,
+        "confusion_matrix":    json.loads(run.confusion_matrix_json)    if run.confusion_matrix_json    else None,
+        "per_class_metrics":   json.loads(run.per_class_json)           if run.per_class_json           else None,
+        "feature_importance":  json.loads(run.feature_importance_json)  if run.feature_importance_json  else None,
+        "roc_curve":           json.loads(run.roc_curve_json)           if run.roc_curve_json           else None,
+        "dataset_stats":       json.loads(run.dataset_stats_json)       if run.dataset_stats_json       else None,
+        "mlp_loss_curve":      json.loads(run.mlp_loss_json)            if run.mlp_loss_json            else None,
+        "model_info":          MODEL_INFO.get(run.model_name, {}),
+        "trained_at":          str(run.created_at),
     }
 
 
 @router.get("/metrics/{dataset}/{model_name}")
 def get_metrics(dataset: str, model_name: str, db: Session = Depends(get_db)):
-    runs = (
+    run = (
         db.query(TrainingRun)
         .filter(TrainingRun.dataset == dataset, TrainingRun.model_name == model_name)
         .order_by(TrainingRun.created_at.desc())
         .first()
     )
-    if not runs:
+    if not run:
         raise HTTPException(404, "No training run found. Please train first.")
-    return {
-        "dataset": runs.dataset,
-        "model_name": runs.model_name,
-        "accuracy": runs.accuracy,
-        "f1_score": runs.f1_score,
-        "precision": runs.precision,
-        "recall": runs.recall,
-        "training_time": runs.training_time,
-        "n_samples": runs.n_samples,
-        "trained_at": runs.created_at,
-    }
+    return _run_to_dict(run)
 
 
 @router.get("/compare/{dataset}")
@@ -137,14 +150,47 @@ def compare_models(dataset: str, db: Session = Depends(get_db)):
             .first()
         )
         if run:
-            results.append({
-                "model_name": run.model_name,
-                "accuracy": run.accuracy,
-                "f1_score": run.f1_score,
-                "precision": run.precision,
-                "recall": run.recall,
-                "training_time": run.training_time,
-                "n_samples": run.n_samples,
-                "model_info": MODEL_INFO.get(run.model_name, {}),
-            })
+            results.append(_run_to_dict(run))
     return {"dataset": dataset, "comparison": results}
+
+
+@router.get("/export/{dataset}")
+def export_results(dataset: str, db: Session = Depends(get_db)):
+    """Descarga un CSV con el resumen de métricas de todos los modelos entrenados."""
+    rows = []
+    for model_name in ALL_MODELS:
+        run = (
+            db.query(TrainingRun)
+            .filter(TrainingRun.dataset == dataset, TrainingRun.model_name == model_name)
+            .order_by(TrainingRun.created_at.desc())
+            .first()
+        )
+        if run:
+            rows.append({
+                "Model":           model_name,
+                "Dataset":         dataset,
+                "Accuracy":        run.accuracy,
+                "F1-Score":        run.f1_score,
+                "Precision":       run.precision,
+                "Recall":          run.recall,
+                "FPR":             run.false_positive_rate,
+                "ROC-AUC":         run.roc_auc,
+                "Training_Time_s": run.training_time,
+                "N_Samples":       run.n_samples,
+                "Trained_At":      str(run.created_at),
+            })
+
+    if not rows:
+        raise HTTPException(404, "No trained models found for this dataset.")
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    output.seek(0)
+
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=ids_results_{dataset}.csv"},
+    )

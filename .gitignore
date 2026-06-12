@@ -8,11 +8,8 @@ venv/
 env/
 .env
 
-# Models & datasets (too large for git)
+# Raw datasets (auto-descargados en startup del servidor)
 backend/data/raw/
-backend/models/
-*.pkl
-ids.db
 
 # Node
 frontend/node_modules/

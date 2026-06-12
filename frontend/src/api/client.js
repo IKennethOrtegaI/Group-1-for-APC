@@ -5,28 +5,31 @@ const API = axios.create({
   timeout: 300000,
 });
 
-export const trainModel = (dataset, model_name) =>
+export const trainModel      = (dataset, model_name) =>
   API.post("/models/train", { dataset, model_name });
 
-export const getTrainStatus = (dataset, model_name) =>
+export const getTrainStatus  = (dataset, model_name) =>
   API.get(`/models/train/status/${dataset}/${model_name}`);
 
-export const predict = (dataset, model_name, features) =>
+export const predict         = (dataset, model_name, features) =>
   API.post("/models/predict", { dataset, model_name, features });
 
-export const getMetrics = (dataset, model_name) =>
+export const getMetrics      = (dataset, model_name) =>
   API.get(`/models/metrics/${dataset}/${model_name}`);
 
-export const compareModels = (dataset) =>
+export const compareModels   = (dataset) =>
   API.get(`/models/compare/${dataset}`);
 
-export const getAlerts = (limit = 50) =>
+export const exportResults   = (dataset) =>
+  API.get(`/models/export/${dataset}`, { responseType: "blob" });
+
+export const getAlerts       = (limit = 50) =>
   API.get(`/alerts/?limit=${limit}`);
 
-export const getAlertStats = () =>
+export const getAlertStats   = () =>
   API.get("/alerts/stats");
 
-export const uploadCSV = (file, dataset, model_name) => {
+export const uploadCSV       = (file, dataset, model_name) => {
   const form = new FormData();
   form.append("file", file);
   return API.post(`/alerts/upload-csv?dataset=${dataset}&model_name=${model_name}`, form, {

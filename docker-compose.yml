@@ -6,12 +6,9 @@ services:
     container_name: ids_backend
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend/data:/app/data
-      - ./backend/models:/app/models
-      - ids_db:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - ENV=production
     restart: unless-stopped
 
   frontend:
@@ -22,6 +19,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  ids_db:

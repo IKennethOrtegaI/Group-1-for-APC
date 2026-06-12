@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -34,11 +34,44 @@ class TrainingRun(Base):
     recall = Column(Float)
     training_time = Column(Float)
     n_samples = Column(Integer)
+    # Extended metrics
+    false_positive_rate = Column(Float, nullable=True)
+    roc_auc = Column(Float, nullable=True)
+    confusion_matrix_json = Column(Text, nullable=True)
+    per_class_json = Column(Text, nullable=True)
+    feature_importance_json = Column(Text, nullable=True)
+    roc_curve_json = Column(Text, nullable=True)
+    dataset_stats_json = Column(Text, nullable=True)
+    mlp_loss_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+def migrate_db():
+    """Add new columns to existing tables without dropping data (idempotent)."""
+    new_cols = [
+        ("false_positive_rate", "REAL"),
+        ("roc_auc", "REAL"),
+        ("confusion_matrix_json", "TEXT"),
+        ("per_class_json", "TEXT"),
+        ("feature_importance_json", "TEXT"),
+        ("roc_curve_json", "TEXT"),
+        ("dataset_stats_json", "TEXT"),
+        ("mlp_loss_json", "TEXT"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in new_cols:
+            try:
+                conn.execute(
+                    text(f"ALTER TABLE training_runs ADD COLUMN {col_name} {col_type}")
+                )
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
 
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    migrate_db()
 
 
 def get_db():
