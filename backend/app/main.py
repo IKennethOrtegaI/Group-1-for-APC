@@ -1,11 +1,13 @@
 import os
+import warnings
 import threading
 import requests as _requests
+warnings.filterwarnings("ignore")  # suppress sklearn/joblib verbose warnings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.database import init_db
-from app.api.routes import models, alerts, monitor, capture
+from app.api.routes import models, alerts, monitor, capture, analytics
 
 # URLs públicas de los datasets (NSL-KDD desde repositorio oficial en GitHub)
 DATASETS = {
@@ -50,6 +52,7 @@ app.include_router(models.router)
 app.include_router(alerts.router)
 app.include_router(monitor.router)
 app.include_router(capture.router)
+app.include_router(analytics.router)
 
 
 @app.on_event("startup")

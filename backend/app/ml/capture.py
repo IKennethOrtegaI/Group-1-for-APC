@@ -5,6 +5,9 @@ Requires Scapy + Npcap (Windows) or libpcap (Linux/Mac).
 import threading
 import time
 import json
+import queue
+import warnings
+warnings.filterwarnings("ignore")
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -62,6 +65,20 @@ class Flow:
     has_rst:   bool = False
     has_ack:   bool = False
     has_data:  bool = False
+    # Per-packet tracking for CICIDS features
+    fwd_pkt_sizes: list = field(default_factory=list)
+    bwd_pkt_sizes: list = field(default_factory=list)
+    fwd_pkt_times: list = field(default_factory=list)
+    bwd_pkt_times: list = field(default_factory=list)
+    fin_count:  int = 0
+    syn_count:  int = 0
+    rst_count:  int = 0
+    psh_count:  int = 0
+    ack_count:  int = 0
+    urg_count:  int = 0
+    init_win_fwd: int = 0
+    init_win_bwd: int = 0
+    fwd_data_pkts: int = 0
 
     def duration(self) -> float:
         return round(self.last_ts - self.start_ts, 4)
@@ -100,6 +117,13 @@ class ConnRecord:
     prediction:    Optional[str] = None
     confidence:    Optional[float] = None
     attack_type:   Optional[str] = None
+    traffic_desc:  Optional[str] = None
+
+    def is_error(self) -> bool:
+        return self.flag in ("S0", "S1", "REJ", "RSTR", "RSTO", "SH")
+
+    def is_rej(self) -> bool:
+        return self.flag in ("REJ", "RSTR", "RSTO")
 
 
 # ── Sliding windows for traffic features ─────────────────────────────────────
@@ -230,8 +254,120 @@ def build_feature_dict(flow: Flow, traffic: dict) -> dict:
     }
 
 
+def _stat(lst):
+    """Mean, std, max, min of a list. Returns (mean, std, max, min)."""
+    if not lst:
+        return 0.0, 0.0, 0.0, 0.0
+    arr = np.array(lst, dtype=float)
+    return float(arr.mean()), float(arr.std()), float(arr.max()), float(arr.min())
+
+
+def _iats(times):
+    """Inter-arrival times from a sorted list of timestamps (seconds → microseconds)."""
+    if len(times) < 2:
+        return []
+    return [(times[i] - times[i-1]) * 1e6 for i in range(1, len(times))]
+
+
+def build_cicids_feature_dict(flow: Flow) -> dict:
+    """
+    Compute CICFlowMeter-compatible features from a completed flow.
+    Returns a dict keyed by the CICIDS2017 column names (after dropping
+    zero-variance and high-correlation features used in training).
+    """
+    dur_us  = max((flow.last_ts - flow.start_ts) * 1e6, 1.0)
+    dur_s   = dur_us / 1e6
+    total_pkts  = flow.src_pkts + flow.dst_pkts
+    total_bytes = flow.src_bytes + flow.dst_bytes
+
+    fwd_len_mean, fwd_len_std, fwd_len_max, fwd_len_min = _stat(flow.fwd_pkt_sizes)
+    bwd_len_mean, bwd_len_std, bwd_len_max, bwd_len_min = _stat(flow.bwd_pkt_sizes)
+
+    all_sizes = flow.fwd_pkt_sizes + flow.bwd_pkt_sizes
+    pkt_mean, pkt_std, pkt_max, pkt_min = _stat(all_sizes)
+    pkt_var = float(np.var(all_sizes)) if all_sizes else 0.0
+
+    all_times = sorted(flow.fwd_pkt_times + flow.bwd_pkt_times)
+    flow_iats  = _iats(all_times)
+    fwd_iats   = _iats(sorted(flow.fwd_pkt_times))
+    bwd_iats   = _iats(sorted(flow.bwd_pkt_times))
+
+    fi_mean, fi_std, fi_max, fi_min = _stat(flow_iats)
+    fwd_iat_mean, fwd_iat_std, _fwd_iat_max, fwd_iat_min = _stat(fwd_iats)
+    bwd_iat_mean, bwd_iat_std, bwd_iat_max, bwd_iat_min = _stat(bwd_iats)
+    bwd_iat_total = sum(bwd_iats)
+
+    flow_bytes_s = total_bytes / dur_s
+    flow_pkts_s  = total_pkts / dur_s
+    fwd_pkts_s   = flow.src_pkts / dur_s
+    bwd_pkts_s   = flow.dst_pkts / dur_s
+
+    fwd_hdr = 20 * flow.src_pkts   # TCP header ~20 bytes
+    bwd_hdr = 20 * flow.dst_pkts
+    avg_bwd_seg = flow.dst_bytes / flow.dst_pkts if flow.dst_pkts else 0.0
+    down_up = flow.dst_bytes / flow.src_bytes if flow.src_bytes else 0.0
+
+    return {
+        "Destination Port":              float(flow.dst_port),
+        "Flow Duration":                 dur_us,
+        "Total Fwd Packets":             float(flow.src_pkts),
+        "Total Backward Packets":        float(flow.dst_pkts),
+        "Total Length of Fwd Packets":   float(flow.src_bytes),
+        "Total Length of Bwd Packets":   float(flow.dst_bytes),
+        "Fwd Packet Length Max":         fwd_len_max,
+        "Fwd Packet Length Min":         fwd_len_min,
+        "Fwd Packet Length Mean":        fwd_len_mean,
+        "Bwd Packet Length Max":         bwd_len_max,
+        "Bwd Packet Length Min":         bwd_len_min,
+        "Bwd Packet Length Mean":        bwd_len_mean,
+        "Flow Bytes/s":                  flow_bytes_s,
+        "Flow Packets/s":                flow_pkts_s,
+        "Flow IAT Mean":                 fi_mean,
+        "Flow IAT Std":                  fi_std,
+        "Flow IAT Max":                  fi_max,
+        "Flow IAT Min":                  fi_min,
+        "Fwd IAT Mean":                  fwd_iat_mean,
+        "Fwd IAT Std":                   fwd_iat_std,
+        "Fwd IAT Min":                   fwd_iat_min,
+        "Bwd IAT Total":                 bwd_iat_total,
+        "Bwd IAT Mean":                  bwd_iat_mean,
+        "Bwd IAT Std":                   bwd_iat_std,
+        "Bwd IAT Max":                   bwd_iat_max,
+        "Bwd IAT Min":                   bwd_iat_min,
+        "Fwd Header Length":             float(fwd_hdr),
+        "Bwd Header Length":             float(bwd_hdr),
+        "Fwd Packets/s":                 fwd_pkts_s,
+        "Bwd Packets/s":                 bwd_pkts_s,
+        "Min Packet Length":             pkt_min,
+        "Max Packet Length":             pkt_max,
+        "Packet Length Mean":            pkt_mean,
+        "Packet Length Std":             pkt_std,
+        "Packet Length Variance":        pkt_var,
+        "FIN Flag Count":                float(flow.fin_count),
+        "SYN Flag Count":                float(flow.syn_count),
+        "RST Flag Count":                float(flow.rst_count),
+        "PSH Flag Count":                float(flow.psh_count),
+        "ACK Flag Count":                float(flow.ack_count),
+        "URG Flag Count":                float(flow.urg_count),
+        "Down/Up Ratio":                 down_up,
+        "Avg Bwd Segment Size":          avg_bwd_seg,
+        "Fwd Header Length.1":           float(fwd_hdr),
+        "Subflow Fwd Packets":           float(flow.src_pkts),
+        "Subflow Fwd Bytes":             float(flow.src_bytes),
+        "Subflow Bwd Packets":           float(flow.dst_pkts),
+        "Subflow Bwd Bytes":             float(flow.dst_bytes),
+        "Init_Win_bytes_forward":        float(flow.init_win_fwd),
+        "Init_Win_bytes_backward":       float(flow.init_win_bwd),
+        "act_data_pkt_fwd":              float(flow.fwd_data_pkts),
+        "min_seg_size_forward":          fwd_len_min,
+        "Active Mean":  0.0, "Active Std":  0.0, "Active Max":  0.0, "Active Min":  0.0,
+        "Idle Mean":    0.0, "Idle Std":    0.0, "Idle Max":    0.0, "Idle Min":    0.0,
+    }
+
+
 def encode_and_predict(feat_dict: dict, model_artifact: dict) -> tuple[str, float]:
     """Apply saved encoders + scaler, then predict."""
+    import warnings
     encoders      = model_artifact["encoders"]
     model         = model_artifact["model"]
     feature_cols  = encoders.get("feature_cols", NSL_KDD_COLS)
@@ -254,7 +390,9 @@ def encode_and_predict(feat_dict: dict, model_artifact: dict) -> tuple[str, floa
 
     X = np.array(row).reshape(1, -1)
     if scaler:
-        X = scaler.transform(X)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            X = scaler.transform(X)
 
     pred  = int(model.predict(X)[0])
     try:
@@ -266,9 +404,166 @@ def encode_and_predict(feat_dict: dict, model_artifact: dict) -> tuple[str, floa
     return label, round(proba, 4)
 
 
+# ── Known-safe IP prefixes (CDN, DNS, major cloud) ───────────────────────────
+# For NSL-KDD: these are modern services that 1999 model can't know as "normal".
+# If model returns Attack with low-medium confidence for these, override to Normal.
+_SAFE_PREFIXES = (
+    "1.1.1.", "8.8.8.", "8.8.4.",          # Cloudflare DNS, Google DNS
+    "142.250.", "172.217.", "216.58.", "64.233.", "74.125.",
+    "34.64.", "34.96.", "35.190.", "34.128.", "34.160.",  # Google / GCP
+    "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.",
+    "172.64.", "172.65.", "172.66.", "172.67.", "162.159.",  # Cloudflare
+    "23.44.", "23.32.", "23.195.", "151.101.", "199.232.",   # Akamai / Fastly
+    "52.96.", "52.112.", "52.108.", "13.107.", "40.96.",     # Microsoft
+    "52.94.", "54.239.", "13.35.", "18.160.", "52.84.",      # Amazon CloudFront
+    "157.240.", "31.13.",                                    # Meta
+    "239.255.255.", "224.0.0.",                              # Multicast (always normal)
+    # NOTE: LAN (192.168., 10., etc.) intentionally NOT here — local IPs can be attackers
+)
+
+def _is_known_safe(dst_ip: str, dst_port: int, protocol: str) -> bool:
+    """Returns True if traffic to this destination is clearly a normal CDN/cloud service."""
+    if any(dst_ip.startswith(p) for p in _SAFE_PREFIXES):
+        return True
+    # NTP
+    if dst_port == 123 and protocol == "udp":
+        return True
+    return False
+
+
+# ── Known IP ranges for traffic description ───────────────────────────────────
+_IP_RANGES = [
+    # Google / YouTube
+    ("142.250.", "YouTube/Google"),   ("172.217.", "Google"),
+    ("216.58.",  "Google"),           ("64.233.",  "Google"),
+    ("74.125.",  "Google/YouTube"),   ("34.64.",   "Google Cloud"),
+    ("34.96.",   "Google Cloud"),     ("35.190.",  "Google Cloud"),
+    # Cloudflare
+    ("1.1.1.",   "Cloudflare DNS"),   ("104.16.",  "Cloudflare CDN"),
+    ("104.17.",  "Cloudflare CDN"),   ("104.18.",  "Cloudflare CDN"),
+    ("104.19.",  "Cloudflare CDN"),   ("104.20.",  "Cloudflare CDN"),
+    ("104.21.",  "Cloudflare CDN"),   ("172.64.",  "Cloudflare"),
+    ("172.65.",  "Cloudflare"),       ("172.66.",  "Cloudflare"),
+    # Akamai / CDN
+    ("23.44.",   "Akamai CDN"),       ("23.32.",   "Akamai CDN"),
+    ("23.195.",  "Akamai CDN"),       ("151.101.", "Fastly CDN"),
+    ("199.232.", "Fastly CDN"),
+    # Microsoft / Azure
+    ("52.96.",   "Microsoft/Teams"),  ("52.112.",  "Microsoft Teams"),
+    ("52.108.",  "Microsoft/O365"),   ("52.168.",  "Microsoft Azure"),
+    ("13.107.",  "Microsoft"),        ("40.96.",   "Microsoft"),
+    # Amazon / AWS
+    ("52.94.",   "Amazon AWS"),       ("54.239.",  "Amazon AWS"),
+    ("13.35.",   "Amazon CloudFront"),("18.160.",  "Amazon CloudFront"),
+    ("52.84.",   "Amazon CloudFront"),
+    # Facebook / Meta
+    ("157.240.", "Meta/Facebook"),    ("31.13.",   "Meta/Facebook"),
+    # Twitter / X
+    ("104.244.", "Twitter/X"),
+]
+
+_PORT_DESC = {
+    80: "HTTP", 443: "HTTPS", 53: "DNS", 22: "SSH", 21: "FTP",
+    25: "SMTP", 587: "SMTP", 465: "SMTP-SSL", 110: "POP3", 143: "IMAP",
+    993: "IMAP-SSL", 995: "POP3-SSL", 3306: "MySQL", 5432: "PostgreSQL",
+    3389: "RDP", 5900: "VNC", 23: "Telnet", 179: "BGP", 67: "DHCP",
+    68: "DHCP", 123: "NTP", 161: "SNMP", 8080: "HTTP-Alt", 8443: "HTTPS-Alt",
+    6667: "IRC", 6881: "BitTorrent", 1194: "OpenVPN", 1723: "PPTP",
+    500: "IPsec/VPN", 4500: "IPsec NAT",
+}
+
+
+def describe_traffic(src_ip: str, dst_ip: str, dst_port: int, protocol: str, src_bytes: int, dst_bytes: int) -> str:
+    """Human-readable description of a connection."""
+    # Identify destination service/org
+    org = None
+    for prefix, name in _IP_RANGES:
+        if dst_ip.startswith(prefix):
+            org = name
+            break
+
+    port_name = _PORT_DESC.get(dst_port, f":{dst_port}")
+    total_bytes = src_bytes + dst_bytes
+
+    if total_bytes >= 1_048_576:
+        size_str = f"{total_bytes/1_048_576:.1f} MB"
+    elif total_bytes >= 1024:
+        size_str = f"{total_bytes/1024:.0f} KB"
+    else:
+        size_str = f"{total_bytes} B"
+
+    if org:
+        return f"{protocol.upper()} {port_name} → {org} ({size_str})"
+    return f"{protocol.upper()} {port_name} a {dst_ip} ({size_str})"
+
+
+def infer_attack_type(flow: "Flow", dataset: str) -> str:
+    """
+    Infer attack subcategory from flow features using heuristics.
+    Returns a short label like 'DoS', 'Scan', 'Brute Force', etc.
+    """
+    duration   = flow.duration()
+    src_bytes  = flow.src_bytes
+    dst_bytes  = flow.dst_bytes
+    src_pkts   = flow.src_pkts
+    dst_pkts   = flow.dst_pkts
+    dst_port   = flow.dst_port
+    proto      = flow.protocol
+    has_data   = flow.has_data
+    syn_count  = flow.syn_count
+    rst_count  = flow.rst_count
+    fin_count  = flow.fin_count
+
+    total_pkts = src_pkts + dst_pkts
+    pkt_rate   = total_pkts / max(duration, 0.01)
+    byte_rate  = (src_bytes + dst_bytes) / max(duration, 0.01)
+
+    # DoS / DDoS: high rate, short duration, little response
+    if pkt_rate > 500 or byte_rate > 500_000:
+        if dst_bytes < src_bytes * 0.1:
+            return "DoS/DDoS"
+        return "Flood"
+
+    # SYN flood: many SYNs, no data, no FIN
+    if syn_count > 3 and not has_data and fin_count == 0:
+        return "SYN Flood"
+
+    # Port scan: short, no data, RST or no reply
+    if duration < 0.5 and not has_data and (rst_count > 0 or dst_bytes == 0):
+        if proto == "tcp":
+            return "Port Scan"
+        if proto == "udp":
+            return "UDP Scan"
+        if proto == "icmp":
+            return "ICMP Scan"
+
+    # Brute force: repeated short connections to auth ports
+    if dst_port in (22, 23, 21, 3389, 5900) and duration < 5 and src_pkts < 30:
+        return "Brute Force"
+
+    # SQL injection / web attacks
+    if dst_port in (80, 443, 8080, 8443) and src_bytes > dst_bytes * 2 and src_bytes > 1000:
+        return "Web Attack"
+
+    # DNS amplification / exfiltration
+    if proto == "udp" and dst_port == 53 and src_bytes > 500:
+        return "DNS Abuse"
+
+    # Data exfiltration: large outbound, suspicious port
+    if src_bytes > 100_000 and dst_port not in (80, 443, 8080):
+        return "Exfiltración"
+
+    # CICIDS specific — DDoS patterns (high traffic, balanced pkts)
+    if dataset == "cicids":
+        if pkt_rate > 200 and dst_bytes > 0:
+            return "DDoS"
+
+    return "Anomalía"
+
+
 # ── Capture session ───────────────────────────────────────────────────────────
 class CaptureSession:
-    FLOW_TIMEOUT = 30.0   # seconds before idle flow is flushed
+    FLOW_TIMEOUT = 8.0    # seconds before idle flow is flushed (shorter = faster detection)
 
     def __init__(self):
         self._flows:    dict  = {}           # key → Flow
@@ -279,13 +574,19 @@ class CaptureSession:
         self._running = False
         self._iface   = None
         self._model_artifact = None
+        self._dataset = "nslkdd"
         self.stats    = {"total": 0, "attacks": 0, "normal": 0}
+        # Single DB writer queue — avoids spawning 1 thread per packet during floods
+        self._db_queue: queue.Queue = queue.Queue(maxsize=500)
+        self._db_thread = threading.Thread(target=self._db_worker, daemon=True)
+        self._db_thread.start()
 
-    def start(self, iface: str, model_artifact: dict):
+    def start(self, iface: str, model_artifact: dict, dataset: str = "nslkdd"):
         if self._running:
             return
         self._iface           = iface
         self._model_artifact  = model_artifact
+        self._dataset         = dataset
         self._running         = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
@@ -364,16 +665,41 @@ class CaptureSession:
             if direction == "fwd":
                 flow.src_bytes += payload
                 flow.src_pkts  += 1
+                flow.fwd_pkt_sizes.append(payload)
+                flow.fwd_pkt_times.append(now)
+                if payload > 0:
+                    flow.fwd_data_pkts += 1
             else:
                 flow.dst_bytes += payload
                 flow.dst_pkts  += 1
+                flow.bwd_pkt_sizes.append(payload)
+                flow.bwd_pkt_times.append(now)
 
-            if syn:       flow.has_syn  = True
-            if fin:       flow.has_fin  = True
-            if rst:       flow.has_rst  = True
-            if ack:       flow.has_ack  = True
-            if payload > 0: flow.has_data = True
-            if urg:       flow.urgent   += 1
+            if syn:
+                flow.has_syn  = True
+                flow.syn_count += 1
+                if pkt.haslayer(TCP):
+                    win = pkt[TCP].window
+                    if direction == "fwd" and flow.init_win_fwd == 0:
+                        flow.init_win_fwd = win
+                    elif direction == "rev" and flow.init_win_bwd == 0:
+                        flow.init_win_bwd = win
+            if fin:
+                flow.has_fin  = True
+                flow.fin_count += 1
+            if rst:
+                flow.has_rst  = True
+                flow.rst_count += 1
+            if ack:
+                flow.has_ack  = True
+                flow.ack_count += 1
+            if urg:
+                flow.urgent    += 1
+                flow.urg_count += 1
+            if pkt.haslayer(TCP) and bool(pkt[TCP].flags & 0x08):  # PSH
+                flow.psh_count += 1
+            if payload > 0:
+                flow.has_data = True
             flow.wrong_frag += wrong_frag
 
             # Close on FIN or RST
@@ -387,19 +713,22 @@ class CaptureSession:
         else:
             return
 
-        feat_dict = build_feature_dict(flow, {
-            "count": 1, "srv_count": 1,
-            "serror_rate": 0.0, "srv_serror_rate": 0.0,
-            "rerror_rate": 0.0, "srv_rerror_rate": 0.0,
-            "same_srv_rate": 1.0, "diff_srv_rate": 0.0,
-            "srv_diff_host_rate": 0.0,
-            "dst_host_count": 1, "dst_host_srv_count": 1,
-            "dst_host_same_srv_rate": 1.0, "dst_host_diff_srv_rate": 0.0,
-            "dst_host_same_src_port_rate": 0.0,
-            "dst_host_srv_diff_host_rate": 0.0,
-            "dst_host_serror_rate": 0.0, "dst_host_srv_serror_rate": 0.0,
-            "dst_host_rerror_rate": 0.0, "dst_host_srv_rerror_rate": 0.0,
-        })
+        if self._dataset == "cicids":
+            feat_dict = build_cicids_feature_dict(flow)
+        else:
+            feat_dict = build_feature_dict(flow, {
+                "count": 1, "srv_count": 1,
+                "serror_rate": 0.0, "srv_serror_rate": 0.0,
+                "rerror_rate": 0.0, "srv_rerror_rate": 0.0,
+                "same_srv_rate": 1.0, "diff_srv_rate": 0.0,
+                "srv_diff_host_rate": 0.0,
+                "dst_host_count": 1, "dst_host_srv_count": 1,
+                "dst_host_same_srv_rate": 1.0, "dst_host_diff_srv_rate": 0.0,
+                "dst_host_same_src_port_rate": 0.0,
+                "dst_host_srv_diff_host_rate": 0.0,
+                "dst_host_serror_rate": 0.0, "dst_host_srv_serror_rate": 0.0,
+                "dst_host_rerror_rate": 0.0, "dst_host_srv_rerror_rate": 0.0,
+            })
 
         rec = ConnRecord(
             ts=time.time(), src_ip=flow.src_ip, dst_ip=flow.dst_ip,
@@ -407,23 +736,111 @@ class CaptureSession:
             protocol=flow.protocol, service=flow.service(),
             flag=flow.flag(), duration=flow.duration(),
             src_bytes=flow.src_bytes, dst_bytes=flow.dst_bytes,
-            features=[feat_dict.get(c, 0) for c in NSL_KDD_COLS],
+            features=list(feat_dict.values()),
         )
 
-        # Compute traffic features using window (after basic record)
-        traffic = self._window.traffic_features(rec)
-        feat_dict.update(traffic)
-        rec.features = [feat_dict.get(c, 0) for c in NSL_KDD_COLS]
+        # Para NSL-KDD: enriquecer con ventana de tráfico deslizante
+        if self._dataset != "cicids":
+            traffic = self._window.traffic_features(rec)
+            feat_dict.update(traffic)
+            rec.features = [feat_dict.get(c, 0) for c in NSL_KDD_COLS]
 
         # Classify
+        # NSL-KDD threshold higher (1999 data → more false positives on modern traffic)
+        # CICIDS2017 threshold lower (2017 data → more reliable on modern traffic)
+        CONFIDENCE_THRESHOLD = 0.70 if self._dataset == "nslkdd" else 0.50
+
+        # NSL-KDD only: suppress false positives on known CDN/cloud destinations.
+        # Check ONLY dst_ip — src_ip being local does NOT mean traffic is safe
+        # (a LAN IP like 192.168.x.x can be an attacker inside the network).
+        # CICIDS2017 is trained on modern traffic so no override needed.
+        force_normal = (
+            self._dataset == "nslkdd" and
+            _is_known_safe(flow.dst_ip, flow.dst_port, flow.protocol)
+        )
+
+        # ── Heuristic pre-classification (obvious attack patterns) ──────────────
+        # Applied BEFORE the ML model. If a flow matches a known attack pattern,
+        # we classify it directly without waiting for model confidence.
+        heuristic_label = None
+        heuristic_conf  = 0.92
+        heuristic_type  = None
+        dur   = flow.duration()
+        total_pkts = flow.src_pkts + flow.dst_pkts
+        pkt_rate   = total_pkts / max(dur, 0.001)
+        byte_rate  = (flow.src_bytes + flow.dst_bytes) / max(dur, 0.001)
+
+        if not force_normal:
+            # Port scan: SYN-only probe (no data, no FIN, RST reply or no reply).
+            # Requires src_pkts <= 2 to exclude normal connections that get RST
+            # after data exchange (e.g., HTTP to a closed port after TLS).
+            if (flow.protocol == "tcp"
+                    and dur < 1.0
+                    and flow.syn_count >= 1
+                    and flow.fin_count == 0
+                    and not flow.has_data
+                    and flow.src_pkts <= 2
+                    and (flow.rst_count > 0 or flow.dst_bytes == 0)):
+                heuristic_label = "Attack"
+                heuristic_type  = "Port Scan"
+                heuristic_conf  = 0.91
+
+            # SYN flood: many SYNs from same source, no data, no FIN
+            elif (flow.protocol == "tcp"
+                    and flow.syn_count > 10
+                    and not flow.has_data
+                    and flow.fin_count == 0
+                    and flow.src_pkts > 10):
+                heuristic_label = "Attack"
+                heuristic_type  = "SYN Flood"
+                heuristic_conf  = 0.95
+
+            # DoS / DDoS: high rate AND clearly asymmetric (attacker sends, target silent)
+            elif (pkt_rate > 500
+                    and flow.src_pkts > 50
+                    and flow.dst_pkts < flow.src_pkts * 0.05):
+                heuristic_label = "Attack"
+                heuristic_type  = "DoS/DDoS"
+                heuristic_conf  = 0.93
+
+            # UDP flood: many small UDP packets, no response at all
+            elif (flow.protocol == "udp"
+                    and flow.src_pkts > 50
+                    and flow.dst_pkts == 0
+                    and pkt_rate > 100):
+                heuristic_label = "Attack"
+                heuristic_type  = "UDP Flood"
+                heuristic_conf  = 0.90
+
         if self._model_artifact:
             try:
                 label, conf = encode_and_predict(feat_dict, self._model_artifact)
+                # Override: CDN/cloud traffic → always Normal (NSL-KDD 1999 bias)
+                if force_normal and label == "Attack":
+                    label = "Normal"
+                # Downgrade low-confidence attacks to Normal
+                elif label == "Attack" and conf < CONFIDENCE_THRESHOLD:
+                    label = "Normal"
+
+                # Heuristic wins over model for obvious patterns
+                if heuristic_label == "Attack":
+                    label = "Attack"
+                    conf  = max(conf, heuristic_conf)
+
                 rec.prediction  = label
                 rec.confidence  = conf
-            except Exception as e:
+                if label == "Attack":
+                    rec.attack_type = heuristic_type or infer_attack_type(flow, self._dataset)
+                else:
+                    rec.attack_type = None
+            except Exception:
                 rec.prediction = "Unknown"
                 rec.confidence = 0.0
+
+        rec.traffic_desc = describe_traffic(
+            flow.src_ip, flow.dst_ip, flow.dst_port,
+            flow.protocol, flow.src_bytes, flow.dst_bytes,
+        )
 
         self._window.add(rec)
         self._results.append(rec)
@@ -432,6 +849,45 @@ class CaptureSession:
             self.stats["attacks"] += 1
         else:
             self.stats["normal"] += 1
+
+        # Enqueue for DB write — non-blocking, drops if queue full (flood scenario)
+        try:
+            self._db_queue.put_nowait(rec)
+        except queue.Full:
+            pass
+
+    def _db_worker(self):
+        """Single background thread that drains the DB queue — no per-packet threads."""
+        from app.db.database import SessionLocal, CaptureLog
+        model_name = None
+        while True:
+            try:
+                rec = self._db_queue.get(timeout=2)
+            except queue.Empty:
+                continue
+            try:
+                if model_name is None and self._model_artifact:
+                    model_name = (
+                        self._model_artifact.get("encoders", {}).get("model_name") or
+                        type(self._model_artifact.get("model", "")).__name__
+                    )
+                db = SessionLocal()
+                try:
+                    db.add(CaptureLog(
+                        ts=rec.ts, src_ip=rec.src_ip, dst_ip=rec.dst_ip,
+                        src_port=rec.src_port, dst_port=rec.dst_port,
+                        protocol=rec.protocol, service=rec.service,
+                        flag=rec.flag, duration=rec.duration,
+                        src_bytes=rec.src_bytes, dst_bytes=rec.dst_bytes,
+                        prediction=rec.prediction, confidence=rec.confidence,
+                        attack_type=rec.attack_type, traffic_desc=rec.traffic_desc,
+                        dataset=self._dataset, model_name=model_name,
+                    ))
+                    db.commit()
+                finally:
+                    db.close()
+            except Exception:
+                pass
 
     def _flush_loop(self):
         """Periodically finalize flows that haven't seen packets in FLOW_TIMEOUT seconds."""
@@ -525,13 +981,13 @@ def get_interfaces() -> list[dict]:
         return [{"id": i, "label": i, "description": i} for i in get_if_list()]
 
 
-def start_capture(iface: str, model_artifact: dict) -> CaptureSession:
+def start_capture(iface: str, model_artifact: dict, dataset: str = "nslkdd") -> CaptureSession:
     global _session
     with _session_lock:
         if _session and _session.is_running():
             _session.stop()
         _session = CaptureSession()
-        _session.start(iface, model_artifact)
+        _session.start(iface, model_artifact, dataset=dataset)
         return _session
 
 

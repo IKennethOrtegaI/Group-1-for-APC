@@ -30,18 +30,22 @@ class PredictRequest(BaseModel):
     features: list[float]
 
 
-def _do_train(dataset: str, model_name: str, db: Session):
+def _do_train(dataset: str, model_name: str):
+    from app.db.database import SessionLocal
     key = f"{dataset}_{model_name}"
     training_status[key] = "training"
+    db = SessionLocal()
     try:
         metrics = train_and_save(dataset, model_name, db_session=db)
         training_status[key] = {"status": "done", "metrics": metrics}
     except Exception as e:
         training_status[key] = {"status": "error", "detail": str(e)}
+    finally:
+        db.close()
 
 
 @router.post("/train")
-def train(req: TrainRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def train(req: TrainRequest, background_tasks: BackgroundTasks):
     if req.dataset not in VALID_DATASETS:
         raise HTTPException(400, f"Invalid dataset. Choose from {VALID_DATASETS}")
     if req.model_name not in VALID_MODELS:
@@ -49,7 +53,7 @@ def train(req: TrainRequest, background_tasks: BackgroundTasks, db: Session = De
 
     key = f"{req.dataset}_{req.model_name}"
     training_status[key] = "queued"
-    background_tasks.add_task(_do_train, req.dataset, req.model_name, db)
+    background_tasks.add_task(_do_train, req.dataset, req.model_name)
     return {"message": f"Training started for {req.model_name} on {req.dataset}", "key": key}
 
 

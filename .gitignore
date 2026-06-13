@@ -20,6 +20,9 @@ frontend/tsconfig*.tsbuildinfo
 # Docker volumes
 *.log
 
+# SQLite DB (datos de captura locales, no compartir)
+*.db
+
 # OS
 .DS_Store
 Thumbs.db

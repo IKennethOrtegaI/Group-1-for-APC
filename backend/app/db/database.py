@@ -46,8 +46,52 @@ class TrainingRun(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CaptureLog(Base):
+    """Persists every classified flow from real-time capture for time-range analytics."""
+    __tablename__ = "capture_logs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    ts          = Column(Float, nullable=False, index=True)   # Unix timestamp
+    src_ip      = Column(String, nullable=True)
+    dst_ip      = Column(String, nullable=True)
+    src_port    = Column(Integer, nullable=True)
+    dst_port    = Column(Integer, nullable=True)
+    protocol    = Column(String, nullable=True)
+    service     = Column(String, nullable=True)
+    flag        = Column(String, nullable=True)
+    duration    = Column(Float, nullable=True)
+    src_bytes   = Column(Integer, nullable=True)
+    dst_bytes   = Column(Integer, nullable=True)
+    prediction  = Column(String, nullable=True)
+    confidence  = Column(Float, nullable=True)
+    attack_type = Column(String, nullable=True)
+    traffic_desc= Column(String, nullable=True)
+    dataset     = Column(String, nullable=True)
+    model_name  = Column(String, nullable=True)
+    created_at  = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 def migrate_db():
     """Add new columns to existing tables without dropping data (idempotent)."""
+    # Create capture_logs if not exists (new table)
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS capture_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                src_ip TEXT, dst_ip TEXT,
+                src_port INTEGER, dst_port INTEGER,
+                protocol TEXT, service TEXT, flag TEXT,
+                duration REAL, src_bytes INTEGER, dst_bytes INTEGER,
+                prediction TEXT, confidence REAL,
+                attack_type TEXT, traffic_desc TEXT,
+                dataset TEXT, model_name TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_capture_logs_ts ON capture_logs(ts)"))
+        conn.commit()
+
     new_cols = [
         ("false_positive_rate", "REAL"),
         ("roc_auc", "REAL"),

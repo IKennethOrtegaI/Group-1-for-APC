@@ -1,8 +1,10 @@
 import copy
 import json
+import threading
 import time
 
 import numpy as np
+import sklearn
 from collections import Counter
 from pathlib import Path
 
@@ -18,12 +20,13 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve as sk_roc_curve,
 )
+from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import LinearSVC
 from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
 
-from app.ml.preprocessor import load_nsl_kdd, load_cicids, preprocess
+from app.ml.preprocessor import load_nsl_kdd, load_cicids, preprocess, get_train_test_split
 from app.core.config import settings
 
 ALL_MODELS = ["random_forest", "xgboost", "svm", "mlp"]
@@ -36,6 +39,7 @@ MODELS = {
         n_estimators=100, learning_rate=0.15, max_depth=6,
         use_label_encoder=False, eval_metric="logloss",
         n_jobs=-1, random_state=42, tree_method="hist",
+        # scale_pos_weight se setea en train_and_save tras conocer el ratio real
     ),
     "svm": CalibratedClassifierCV(
         LinearSVC(C=1.0, max_iter=2000, random_state=42), cv=3
@@ -43,7 +47,7 @@ MODELS = {
     "mlp": MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
         activation="relu", solver="adam",
-        max_iter=150, random_state=42,
+        max_iter=300, random_state=42,
         early_stopping=True, validation_fraction=0.1,
         learning_rate_init=0.001, n_iter_no_change=10,
     ),
@@ -60,7 +64,7 @@ MODEL_INFO = {
     "xgboost": {
         "full_name": "XGBoost",
         "type": "Gradient Boosting",
-        "params": "100 estimadores, lr=0.15, depth=6, hist",
+        "params": "100 estimadores, lr=0.15, depth=6, hist, scale_pos_weight auto",
         "strengths": ["Máxima precisión", "Regularización integrada", "Rápido"],
         "weaknesses": ["Muchos hiperparámetros", "Difícil de interpretar"],
     },
@@ -74,32 +78,32 @@ MODEL_INFO = {
     "mlp": {
         "full_name": "Red Neuronal (MLP)",
         "type": "Multi-Layer Perceptron",
-        "params": "Capas: 128→64→32, ReLU, Adam, early_stopping",
+        "params": "Capas: 128→64→32, ReLU, Adam, early_stopping, max_iter=300",
         "strengths": ["Aprende patrones no lineales", "Flexible", "Escalable"],
         "weaknesses": ["Requiere normalización estricta", "Caja negra"],
     },
 }
 
-# Cache de datos preprocesados (evita releer CSV + SMOTE por cada modelo)
+# Cache de datos preprocesados — protegido con Lock para evitar race conditions
 _DATA_CACHE: dict = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def _get_preprocessed(dataset: str):
-    if dataset in _DATA_CACHE:
-        return _DATA_CACHE[dataset]
+    with _CACHE_LOCK:
+        if dataset in _DATA_CACHE:
+            return _DATA_CACHE[dataset]
 
     data_dir = settings.DATA_DIR
     if dataset == "nslkdd":
         df = load_nsl_kdd(data_dir)
-        train_df = df[df["split"] == "train"]
-        test_df  = df[df["split"] == "test"]
-        X_train_raw, y_train_raw, _, encoders = preprocess(train_df, dataset, fit=True)
-        X_test, y_test, attack_types_test, _  = preprocess(test_df,  dataset, fit=False, encoders=encoders)
     else:
         df = load_cicids(data_dir)
-        split_idx = int(len(df) * 0.8)
-        X_train_raw, y_train_raw, _, encoders = preprocess(df.iloc[:split_idx], dataset, fit=True)
-        X_test, y_test, attack_types_test, _  = preprocess(df.iloc[split_idx:], dataset, fit=False, encoders=encoders)
+
+    train_df, test_df = get_train_test_split(dataset, df)
+
+    X_train_raw, y_train_raw, _, encoders = preprocess(train_df, dataset, fit=True)
+    X_test, y_test, attack_types_test, _  = preprocess(test_df,  dataset, fit=False, encoders=encoders)
 
     before_dist = Counter(y_train_raw.tolist())
 
@@ -130,8 +134,10 @@ def _get_preprocessed(dataset: str):
         },
     }
 
-    _DATA_CACHE[dataset] = (X_train, y_train, X_test, y_test, encoders, attack_types_test, dataset_stats)
-    return _DATA_CACHE[dataset]
+    result = (X_train, y_train, X_test, y_test, encoders, attack_types_test, dataset_stats)
+    with _CACHE_LOCK:
+        _DATA_CACHE[dataset] = result
+    return result
 
 
 def compute_metrics(
@@ -152,9 +158,16 @@ def compute_metrics(
 
     result = {
         "accuracy":            round(float(accuracy_score(y_true, y_pred)), 4),
+        # weighted: principal para comparación con literatura IDS
         "f1_score":            round(float(f1_score(y_true, y_pred, average="weighted", zero_division=0)), 4),
         "precision":           round(float(precision_score(y_true, y_pred, average="weighted", zero_division=0)), 4),
         "recall":              round(float(recall_score(y_true, y_pred, average="weighted", zero_division=0)), 4),
+        # binary: detectar ataques (clase 1) — métrica más informativa con clases desbalanceadas
+        "f1_binary":           round(float(f1_score(y_true, y_pred, average="binary", zero_division=0)), 4),
+        "precision_binary":    round(float(precision_score(y_true, y_pred, average="binary", zero_division=0)), 4),
+        "recall_binary":       round(float(recall_score(y_true, y_pred, average="binary", zero_division=0)), 4),
+        # macro: sin ponderar por soporte — más sensible a clases minoritarias
+        "f1_macro":            round(float(f1_score(y_true, y_pred, average="macro", zero_division=0)), 4),
         "confusion_matrix":    cm,
         "false_positive_rate": fpr_val,
         "true_positives":      int(tp),
@@ -168,7 +181,6 @@ def compute_metrics(
         try:
             auc = roc_auc_score(y_true, y_proba[:, 1])
             fpr_arr, tpr_arr, _ = sk_roc_curve(y_true, y_proba[:, 1])
-            # Interpolate to 100 standard FPR points so all models share the same x-axis
             standard_fpr = np.linspace(0, 1, 100)
             tpr_interp = np.interp(standard_fpr, fpr_arr, tpr_arr)
             result["roc_auc"]   = round(float(auc), 4)
@@ -210,8 +222,13 @@ def compute_metrics(
                     {"feature": f, "importance": round(float(v), 6)} for f, v in pairs
                 ]
             elif model_name == "svm":
-                coef = model.calibrated_classifiers_[0].estimator.coef_[0]
-                pairs = sorted(zip(feature_names, np.abs(coef).tolist()), key=lambda x: x[1], reverse=True)[:20]
+                # Promediar coeficientes de todos los folds calibrados
+                all_coefs = [
+                    np.abs(cc.estimator.coef_[0])
+                    for cc in model.calibrated_classifiers_
+                ]
+                mean_coef = np.mean(all_coefs, axis=0)
+                pairs = sorted(zip(feature_names, mean_coef.tolist()), key=lambda x: x[1], reverse=True)[:20]
                 result["feature_importance"] = [
                     {"feature": f, "importance": round(float(v), 6)} for f, v in pairs
                 ]
@@ -233,11 +250,22 @@ def train_and_save(dataset: str, model_name: str, db_session=None):
     feature_names = dataset_stats.get("feature_names", [])
 
     X_tr, y_tr = X_train, y_train
+
     if model_name == "svm" and len(X_tr) > 50000:
-        idx = np.random.choice(len(X_tr), 50000, replace=False)
-        X_tr, y_tr = X_tr[idx], y_tr[idx]
+        # Subsample estratificado con semilla fija para reproducibilidad
+        _, X_tr, _, y_tr = train_test_split(
+            X_tr, y_tr, test_size=50000 / len(X_tr),
+            stratify=y_tr, random_state=42
+        )
 
     model = copy.deepcopy(MODELS[model_name])
+
+    # XGBoost: compensar desequilibrio de clases en datos sin SMOTE (test set)
+    if model_name == "xgboost":
+        n_neg = int((y_tr == 0).sum())
+        n_pos = int((y_tr == 1).sum())
+        if n_pos > 0:
+            model.set_params(scale_pos_weight=round(n_neg / n_pos, 4))
 
     start = time.time()
     model.fit(X_tr, y_tr)
@@ -272,28 +300,59 @@ def train_and_save(dataset: str, model_name: str, db_session=None):
         "dataset_stats": dataset_stats,
     })
 
-    joblib.dump({"model": model, "encoders": encoders}, models_dir / f"{dataset}_{model_name}.pkl")
+    # Guardar artefacto con versión de sklearn para detectar incompatibilidades al cargar
+    joblib.dump(
+        {
+            "model":          model,
+            "encoders":       encoders,
+            "sklearn_version": sklearn.__version__,
+            "trained_at":     time.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
+        models_dir / f"{dataset}_{model_name}.pkl",
+    )
 
     if db_session:
         from app.db.database import TrainingRun
-        db_session.add(TrainingRun(
-            dataset=dataset,
-            model_name=model_name,
-            accuracy=metrics["accuracy"],
-            f1_score=metrics["f1_score"],
-            precision=metrics["precision"],
-            recall=metrics["recall"],
-            training_time=training_time,
-            n_samples=metrics["n_samples"],
-            false_positive_rate=metrics["false_positive_rate"],
-            roc_auc=metrics.get("roc_auc"),
-            confusion_matrix_json=json.dumps(metrics["confusion_matrix"]),
-            per_class_json=json.dumps(metrics.get("per_class_metrics", {})),
-            feature_importance_json=json.dumps(metrics.get("feature_importance", [])),
-            roc_curve_json=json.dumps(metrics.get("roc_curve", {})),
-            dataset_stats_json=json.dumps(dataset_stats),
-            mlp_loss_json=json.dumps(metrics.get("mlp_loss_curve", [])),
-        ))
+        # Upsert: actualizar si ya existe, insertar si no
+        existing = (
+            db_session.query(TrainingRun)
+            .filter(TrainingRun.dataset == dataset, TrainingRun.model_name == model_name)
+            .first()
+        )
+        if existing:
+            existing.accuracy              = metrics["accuracy"]
+            existing.f1_score              = metrics["f1_score"]
+            existing.precision             = metrics["precision"]
+            existing.recall                = metrics["recall"]
+            existing.training_time         = training_time
+            existing.n_samples             = metrics["n_samples"]
+            existing.false_positive_rate   = metrics["false_positive_rate"]
+            existing.roc_auc               = metrics.get("roc_auc")
+            existing.confusion_matrix_json = json.dumps(metrics["confusion_matrix"])
+            existing.per_class_json        = json.dumps(metrics.get("per_class_metrics", {}))
+            existing.feature_importance_json = json.dumps(metrics.get("feature_importance", []))
+            existing.roc_curve_json        = json.dumps(metrics.get("roc_curve", {}))
+            existing.dataset_stats_json    = json.dumps(dataset_stats)
+            existing.mlp_loss_json         = json.dumps(metrics.get("mlp_loss_curve", []))
+        else:
+            db_session.add(TrainingRun(
+                dataset=dataset,
+                model_name=model_name,
+                accuracy=metrics["accuracy"],
+                f1_score=metrics["f1_score"],
+                precision=metrics["precision"],
+                recall=metrics["recall"],
+                training_time=training_time,
+                n_samples=metrics["n_samples"],
+                false_positive_rate=metrics["false_positive_rate"],
+                roc_auc=metrics.get("roc_auc"),
+                confusion_matrix_json=json.dumps(metrics["confusion_matrix"]),
+                per_class_json=json.dumps(metrics.get("per_class_metrics", {})),
+                feature_importance_json=json.dumps(metrics.get("feature_importance", [])),
+                roc_curve_json=json.dumps(metrics.get("roc_curve", {})),
+                dataset_stats_json=json.dumps(dataset_stats),
+                mlp_loss_json=json.dumps(metrics.get("mlp_loss_curve", [])),
+            ))
         db_session.commit()
 
     return metrics

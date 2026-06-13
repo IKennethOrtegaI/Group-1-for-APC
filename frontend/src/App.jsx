@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Shield, Activity, BarChart2, Terminal as TermIcon,
-  Upload, Cpu, X, ChevronRight, Wifi,
+  Upload, Cpu, X, ChevronRight, Wifi, TrendingUp,
 } from "lucide-react";
 import NetworkMap       from "./components/NetworkMap";
 import ThreatRadar      from "./components/ThreatRadar";
@@ -11,9 +11,10 @@ import PredictSimulator from "./components/PredictSimulator";
 import BatchUpload      from "./components/BatchUpload";
 import ModelComparison  from "./components/ModelComparison";
 import SplashScreen     from "./components/SplashScreen";
-import NetworkMonitor   from "./components/NetworkMonitor";
 import LiveCapture      from "./components/LiveCapture";
+import Analytics        from "./components/Analytics";
 import { getAlertStats } from "./api/client";
+
 
 // ── Side panels config ──────────────────────────────────────────────────────
 const IS_LOCAL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
@@ -23,8 +24,8 @@ const PANELS = [
   { id: "predict",     label: "Predictor",   icon: TermIcon,  color: "#a371f7" },
   { id: "batch",       label: "CSV",         icon: Upload,    color: "#3fb950" },
   { id: "comparativa", label: "Comparativa", icon: BarChart2, color: "#d29922" },
-  { id: "monitor",     label: "Monitor",     icon: Wifi,      color: "#ff7b72" },
-  ...(IS_LOCAL ? [{ id: "captura", label: "Captura Live", icon: Activity, color: "#39d353" }] : []),
+  { id: "monitor",     label: "Monitor IDS", icon: Wifi,      color: "#39d353" },
+  { id: "analytics",  label: "Analytics",   icon: TrendingUp,color: "#a371f7" },
 ];
 
 // ── KPI Chip ────────────────────────────────────────────────────────────────
@@ -48,20 +49,18 @@ const PANEL_TITLES = {
   predict:     "Predictor de Tráfico",
   batch:       "Análisis por Lote (CSV)",
   comparativa: "Análisis Comparativo de Modelos",
-  monitor:     "Monitor de Red en Tiempo Real",
-  captura:     "Captura de Paquetes en Vivo — NSL-KDD Features",
+  monitor:     "Monitor IDS — Captura de Paquetes en Tiempo Real",
+  analytics:   "Analytics — Indicadores Históricos por Rango de Tiempo",
 };
 
 // ───────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [showSplash,  setShowSplash]  = useState(true);
   const [activePanel, setActivePanel] = useState(null);
-  const [dataset,     setDataset]     = useState("nslkdd");
+  const [dataset,     setDataset]     = useState("cicids");
   const [stats,       setStats]       = useState({ total: 0, attacks: 0, normal: 0, attack_rate: 0 });
   const [refreshKey,  setRefreshKey]  = useState(0);
-  const [lastAttack,  setLastAttack]  = useState(null);
-  const attackRef = useRef(null);
-  const refresh   = () => setRefreshKey(k => k + 1);
+  const refresh = () => setRefreshKey(k => k + 1);
 
   useEffect(() => {
     const load = () => getAlertStats().then(r => setStats(r.data)).catch(() => {});
@@ -69,10 +68,6 @@ export default function App() {
     const iv = setInterval(load, 6000);
     return () => clearInterval(iv);
   }, [refreshKey]);
-
-  const handleAttack = useCallback((evt) => {
-    if (evt !== attackRef.current) { attackRef.current = evt; setLastAttack(evt); }
-  }, []);
 
   const togglePanel = (id) => setActivePanel(p => p === id ? null : id);
 
@@ -87,7 +82,7 @@ export default function App() {
             color: dataset === d ? "#58a6ff" : "#545d68",
             borderRight: d === "nslkdd" ? "1px solid #1c2333" : "none",
           }}>
-          {d === "nslkdd" ? "NSL-KDD" : "CICIDS2017"}
+          {d === "nslkdd" ? "NSL-KDD" : "CICIDS2017 ★"}
         </button>
       ))}
     </div>
@@ -167,7 +162,7 @@ export default function App() {
           <div className="absolute inset-0 p-3">
             <div className="w-full h-full rounded-xl overflow-hidden"
               style={{ background: "#070d14", border: "1px solid #1c2333" }}>
-              <NetworkMap onAttack={handleAttack}/>
+              <NetworkMap/>
             </div>
           </div>
 
@@ -190,7 +185,7 @@ export default function App() {
                   <span className="text-[12px] font-bold" style={{ color: "#cdd9e5" }}>
                     {PANEL_TITLES[activePanel]}
                   </span>
-                  {(activePanel === "train" || activePanel === "predict" || activePanel === "batch" || activePanel === "comparativa") && (
+                  {["train","predict","batch","comparativa","monitor"].includes(activePanel) && (
                     <DatasetToggle/>
                   )}
                 </div>
@@ -224,13 +219,13 @@ export default function App() {
                   </div>
                 )}
                 {activePanel === "monitor" && (
-                  <div className="max-w-4xl mx-auto h-full">
-                    <NetworkMonitor />
-                  </div>
-                )}
-                {activePanel === "captura" && (
                   <div className="max-w-5xl mx-auto">
                     <LiveCapture dataset={dataset}/>
+                  </div>
+                )}
+                {activePanel === "analytics" && (
+                  <div className="max-w-5xl mx-auto">
+                    <Analytics/>
                   </div>
                 )}
               </div>
@@ -257,15 +252,15 @@ export default function App() {
           style={{ borderLeft: "1px solid #1c2333" }}>
 
           {/* Radar — fijo, pequeño */}
-          <div className="shrink-0 rounded-xl p-3"
+          <div className="shrink-0 rounded-xl p-2"
             style={{ background: "#050d05", border: "1px solid #163516" }}>
-            <ThreatRadar newAttack={lastAttack}/>
+            <ThreatRadar/>
           </div>
 
           {/* Terminal — ocupa todo el espacio restante */}
-          <div className="flex-1 rounded-xl p-4 overflow-hidden flex flex-col"
+          <div className="flex-1 rounded-xl p-3 overflow-hidden flex flex-col"
             style={{ background: "#04070a", border: "1px solid #1c2333", minHeight: 0 }}>
-            <LiveTerminal newAttack={lastAttack}/>
+            <LiveTerminal/>
           </div>
         </div>
       </div>

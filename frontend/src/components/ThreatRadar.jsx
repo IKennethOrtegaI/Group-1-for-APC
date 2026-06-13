@@ -1,155 +1,244 @@
+/**
+ * ThreatRadar — visualiza conexiones reales del IDS.
+ * Blips rojos = ataques, verdes = normales.
+ * Sin datos simulados. Solo activo cuando hay captura corriendo.
+ */
 import { useEffect, useRef, useState } from "react";
 
-const CX = 130, CY = 130, MAX_R = 115;
+const API  = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const CX   = 88;
+const CY   = 88;
+const MAX_R = 78;
 
-export default function ThreatRadar({ newAttack }) {
-  const [angle, setAngle] = useState(0);
-  const [blips, setBlips] = useState([]);
-  const animRef = useRef();
-  const prevAttack = useRef(null);
+// Mapea una conexión a coordenadas polares deterministas
+function connToPoint(conn) {
+  // Ángulo: hash del IP destino + puerto → 0–360°
+  const ipParts  = (conn.dst || "0.0.0.0:0").split(":")[0].split(".");
+  const ipHash   = ipParts.reduce((acc, p) => acc * 31 + parseInt(p || 0), 0);
+  const portHash = parseInt((conn.dst || ":0").split(":")[1] || 0);
+  const angle    = ((ipHash * 13 + portHash * 7) % 360) * (Math.PI / 180);
 
-  // Sweep rotation
+  // Radio: ataques más lejos del centro; normal cerca
+  const conf  = conn.confidence ?? 0.5;
+  const r     = conn.prediction === "Attack"
+    ? MAX_R * (0.55 + conf * 0.42)   // ataques: 55–97% del radio
+    : MAX_R * (0.15 + (1 - conf) * 0.35); // normales: 15–50%
+
+  return {
+    x: CX + r * Math.cos(angle),
+    y: CY + r * Math.sin(angle),
+  };
+}
+
+export default function ThreatRadar() {
+  const [sweepAngle, setSweepAngle] = useState(0);
+  const [blips,      setBlips]      = useState([]);   // {id, x, y, attack, attackType, t, conf}
+  const [running,    setRunning]    = useState(false);
+  const [stats,      setStats]      = useState({ total: 0, attacks: 0, normal: 0 });
+  const animRef  = useRef();
+  const seenRef  = useRef(new Set());   // ts+src+dst ya vistos
+
+  // Sweep rotation (siempre gira — pausa visualmente cuando no hay captura)
   useEffect(() => {
     let a = 0;
-    const animate = () => {
-      a = (a + 0.6) % 360;
-      setAngle(a);
-      animRef.current = requestAnimationFrame(animate);
+    const tick = () => {
+      a = (a + (running ? 0.8 : 0.15)) % 360;
+      setSweepAngle(a);
+      animRef.current = requestAnimationFrame(tick);
     };
-    animRef.current = requestAnimationFrame(animate);
+    animRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animRef.current);
-  }, []);
+  }, [running]);
 
-  // Add blips periodically
+  // Polling de resultados reales
   useEffect(() => {
-    const iv = setInterval(() => {
-      const theta = Math.random() * Math.PI * 2;
-      const r = 25 + Math.random() * 95;
-      setBlips(prev => [
-        ...prev.filter(b => Date.now() - b.t < 6000).slice(-14),
-        { id: Date.now(), x: CX + r * Math.cos(theta), y: CY + r * Math.sin(theta), t: Date.now(), attack: Math.random() < 0.3 },
-      ]);
-    }, 1200);
+    const poll = async () => {
+      try {
+        const [statusRes, resultsRes] = await Promise.all([
+          fetch(`${API}/capture/status`),
+          fetch(`${API}/capture/results?limit=80`),
+        ]);
+        const statusData  = await statusRes.json();
+        const resultsData = await resultsRes.json();
+
+        setRunning(statusData.running ?? false);
+        setStats(statusData.stats ?? { total: 0, attacks: 0, normal: 0 });
+
+        const conns = resultsData.connections ?? [];
+        const now   = Date.now();
+
+        const newBlips = [];
+        for (const conn of conns) {
+          const key = `${conn.ts}-${conn.src}-${conn.dst}`;
+          if (seenRef.current.has(key)) continue;
+          seenRef.current.add(key);
+
+          const pt = connToPoint(conn);
+          newBlips.push({
+            id:         key,
+            x:          pt.x,
+            y:          pt.y,
+            attack:     conn.prediction === "Attack",
+            attackType: conn.attack_type ?? null,
+            conf:       conn.confidence ?? 0.5,
+            t:          now,
+          });
+        }
+
+        if (newBlips.length > 0) {
+          setBlips(prev => {
+            const alive = prev.filter(b => now - b.t < 9000);
+            return [...alive, ...newBlips].slice(-40);
+          });
+        }
+      } catch { /* backend no disponible */ }
+    };
+
+    poll();
+    const iv = setInterval(poll, 1800);
     return () => clearInterval(iv);
   }, []);
 
-  // React to external attack event
-  useEffect(() => {
-    if (!newAttack || newAttack === prevAttack.current) return;
-    prevAttack.current = newAttack;
-    for (let i = 0; i < 3; i++) {
-      setTimeout(() => {
-        const theta = Math.random() * Math.PI * 2;
-        const r = 40 + Math.random() * 75;
-        setBlips(prev => [
-          ...prev.slice(-14),
-          { id: Date.now() + i, x: CX + r * Math.cos(theta), y: CY + r * Math.sin(theta), t: Date.now(), attack: true },
-        ]);
-      }, i * 200);
-    }
-  }, [newAttack]);
-
-  const rad = (angle * Math.PI) / 180;
-  const sx = CX + MAX_R * Math.cos(rad);
-  const sy = CY + MAX_R * Math.sin(rad);
+  const rad  = (sweepAngle * Math.PI) / 180;
+  const sx   = CX + MAX_R * Math.cos(rad);
+  const sy   = CY + MAX_R * Math.sin(rad);
+  const now  = Date.now();
+  const activeAttacks = blips.filter(b => b.attack && now - b.t < 9000).length;
 
   return (
     <div>
+      {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-bold uppercase tracking-[0.15em]" style={{ color: "#3fb950" }}>
           Radar de Amenazas
         </span>
         <div className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#3fb950", boxShadow: "0 0 4px #3fb950" }}/>
-          <span className="text-[9px]" style={{ color: "#3fb950" }}>ACTIVO</span>
+          <span className="w-1.5 h-1.5 rounded-full"
+            style={{
+              background: running ? "#3fb950" : "#545d68",
+              boxShadow:  running ? "0 0 5px #3fb950" : "none",
+              animation:  running ? "flicker 2s infinite" : "none",
+            }}/>
+          <span className="text-[9px]" style={{ color: running ? "#3fb950" : "#545d68" }}>
+            {running ? "EN VIVO" : "INACTIVO"}
+          </span>
         </div>
       </div>
 
-      <svg width="260" height="260" viewBox="0 0 260 260">
+      {/* SVG Radar */}
+      <svg width="176" height="176" viewBox="0 0 176 176">
         <defs>
-          <radialGradient id="rbg">
-            <stop offset="0%" stopColor="#091409"/>
-            <stop offset="100%" stopColor="#050a05"/>
+          <radialGradient id="rbg2">
+            <stop offset="0%"   stopColor={running ? "#071309" : "#08090c"}/>
+            <stop offset="100%" stopColor="#050609"/>
           </radialGradient>
-          <filter id="rf"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-          <filter id="rf2"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-          <clipPath id="radarClip">
+          <filter id="glow2">
+            <feGaussianBlur stdDeviation="2.5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="atkGlow">
+            <feGaussianBlur stdDeviation="5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <clipPath id="radarClip2">
             <circle cx={CX} cy={CY} r={MAX_R}/>
           </clipPath>
         </defs>
 
-        {/* Background */}
-        <circle cx={CX} cy={CY} r={MAX_R + 6} fill="url(#rbg)" stroke="#0d2b0d" strokeWidth="1"/>
+        {/* Fondo */}
+        <circle cx={CX} cy={CY} r={MAX_R + 5} fill="url(#rbg2)" stroke="#0d1c0d" strokeWidth="1"/>
 
-        {/* Rings */}
+        {/* Anillos */}
         {[0.25, 0.5, 0.75, 1].map(f => (
-          <circle key={f} cx={CX} cy={CY} r={MAX_R * f} fill="none" stroke="#163516" strokeWidth="0.8" opacity="0.7"/>
+          <circle key={f} cx={CX} cy={CY} r={MAX_R * f}
+            fill="none"
+            stroke={running ? "#163516" : "#141820"}
+            strokeWidth="0.8" opacity="0.7"/>
         ))}
 
-        {/* Cross */}
-        <line x1={CX - MAX_R} y1={CY} x2={CX + MAX_R} y2={CY} stroke="#163516" strokeWidth="0.5" opacity="0.5"/>
-        <line x1={CX} y1={CY - MAX_R} x2={CX} y2={CY + MAX_R} stroke="#163516" strokeWidth="0.5" opacity="0.5"/>
-        <line x1={CX - MAX_R * 0.7} y1={CY - MAX_R * 0.7} x2={CX + MAX_R * 0.7} y2={CY + MAX_R * 0.7} stroke="#163516" strokeWidth="0.3" opacity="0.3"/>
-        <line x1={CX + MAX_R * 0.7} y1={CY - MAX_R * 0.7} x2={CX - MAX_R * 0.7} y2={CY + MAX_R * 0.7} stroke="#163516" strokeWidth="0.3" opacity="0.3"/>
+        {/* Ejes */}
+        <line x1={CX-MAX_R} y1={CY} x2={CX+MAX_R} y2={CY} stroke={running ? "#163516" : "#141820"} strokeWidth="0.5" opacity="0.5"/>
+        <line x1={CX} y1={CY-MAX_R} x2={CX} y2={CY+MAX_R} stroke={running ? "#163516" : "#141820"} strokeWidth="0.5" opacity="0.5"/>
 
-        {/* Sweep trail */}
-        <g clipPath="url(#radarClip)">
-          {[80, 60, 40, 20].map((off, i) => {
-            const a = ((angle - off + 360) % 360) * Math.PI / 180;
+        {/* Sweep (atenuado si no hay captura) */}
+        <g clipPath="url(#radarClip2)" opacity={running ? 1 : 0.2}>
+          {[70, 50, 30, 15].map((off, i) => {
+            const a = ((sweepAngle - off + 360) % 360) * Math.PI / 180;
             return (
-              <line key={off}
-                x1={CX} y1={CY}
+              <line key={off} x1={CX} y1={CY}
                 x2={CX + MAX_R * Math.cos(a)} y2={CY + MAX_R * Math.sin(a)}
-                stroke="#3fb950" strokeWidth="1"
-                opacity={0.04 * (5 - i)}
-              />
+                stroke="#3fb950" strokeWidth="1" opacity={0.035 * (5 - i)}/>
             );
           })}
-          {/* Sweep line */}
           <line x1={CX} y1={CY} x2={sx} y2={sy}
-            stroke="#3fb950" strokeWidth="1.5" opacity="0.95"
-            filter="url(#rf)"/>
+            stroke="#3fb950" strokeWidth="1.5" opacity="0.9" filter="url(#glow2)"/>
         </g>
 
-        {/* Blips */}
+        {/* Blips reales */}
         {blips.map(b => {
-          const age = (Date.now() - b.t) / 6000;
-          const op = Math.max(0, 1 - age * 1.3);
+          const age = (now - b.t) / 9000;
+          const op  = Math.max(0, 1 - age * 1.2);
+          if (op <= 0) return null;
           return (
-            <circle key={b.id} cx={b.x} cy={b.y}
-              r={b.attack ? 4 : 2.5}
-              fill={b.attack ? "#f85149" : "#3fb950"}
-              opacity={op}
-              filter={b.attack ? "url(#rf2)" : "url(#rf)"}
-            />
+            <g key={b.id}>
+              {b.attack && (
+                <circle cx={b.x} cy={b.y} r={7} fill="rgba(248,81,73,0.15)"
+                  stroke="#f85149" strokeWidth="0.5" opacity={op * 0.6}/>
+              )}
+              <circle cx={b.x} cy={b.y}
+                r={b.attack ? 4.5 : 2.5}
+                fill={b.attack ? "#f85149" : "#3fb950"}
+                opacity={op}
+                filter={b.attack ? "url(#atkGlow)" : "url(#glow2)"}
+              />
+            </g>
           );
         })}
 
-        {/* Center */}
-        <circle cx={CX} cy={CY} r="3" fill="#3fb950" filter="url(#rf2)"/>
-        <circle cx={CX} cy={CY} r="1" fill="#fff"/>
+        {/* Centro */}
+        <circle cx={CX} cy={CY} r="3.5" fill={running ? "#3fb950" : "#545d68"} filter="url(#glow2)"/>
+        <circle cx={CX} cy={CY} r="1.2" fill="#fff"/>
 
-        {/* Cardinal labels */}
-        {[["N", CX, CY - MAX_R - 8], ["S", CX, CY + MAX_R + 14], ["E", CX + MAX_R + 10, CY + 4], ["O", CX - MAX_R - 8, CY + 4]].map(([l, x, y]) => (
-          <text key={l} x={x} y={y} textAnchor="middle" fontSize="8" fill="#1e4d1e" fontFamily="monospace" fontWeight="bold">{l}</text>
+        {/* Etiquetas cardinales */}
+        {[["N",CX,CY-MAX_R-8],["S",CX,CY+MAX_R+14],["E",CX+MAX_R+10,CY+4],["O",CX-MAX_R-9,CY+4]].map(([l,x,y])=>(
+          <text key={l} x={x} y={y} textAnchor="middle" fontSize="8"
+            fill={running ? "#1e4d1e" : "#1c2333"} fontFamily="monospace" fontWeight="bold">{l}</text>
         ))}
 
-        {/* Outer ring */}
-        <circle cx={CX} cy={CY} r={MAX_R + 6} fill="none" stroke="#1a4d1a" strokeWidth="0.5"/>
+        {/* Sin datos */}
+        {!running && (
+          <text x={CX} y={CY + 22} textAnchor="middle" fontSize="8" fill="#3a4455" fontFamily="monospace">
+            Sin captura activa
+          </text>
+        )}
       </svg>
 
-      {/* Stats below radar */}
-      <div className="grid grid-cols-2 gap-2 mt-2">
-        {[
-          { label: "AMENAZAS ACTIVAS", value: blips.filter(b => b.attack).length, color: "#f85149" },
-          { label: "SEÑALES TOTALES",  value: blips.length,                        color: "#3fb950" },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="rounded-lg px-2 py-1.5 text-center"
+      {/* Stats + leyenda compactos */}
+      <div className="flex items-center justify-between mt-1.5 gap-2">
+        <div className="flex gap-2 flex-1">
+          <div className="rounded px-2 py-1 text-center flex-1"
             style={{ background: "#0c1018", border: "1px solid #1c2333" }}>
-            <p className="text-[8px] uppercase tracking-wider" style={{ color: "#545d68" }}>{label}</p>
-            <p className="text-[16px] font-bold" style={{ color }}>{value}</p>
+            <p className="text-[7px] uppercase" style={{ color: "#545d68" }}>ATK</p>
+            <p className="text-[13px] font-bold" style={{ color: activeAttacks > 0 ? "#f85149" : "#3a4455" }}>
+              {activeAttacks}
+            </p>
           </div>
-        ))}
+          <div className="rounded px-2 py-1 text-center flex-1"
+            style={{ background: "#0c1018", border: "1px solid #1c2333" }}>
+            <p className="text-[7px] uppercase" style={{ color: "#545d68" }}>Total</p>
+            <p className="text-[13px] font-bold" style={{ color: "#3fb950" }}>{stats.total}</p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#f85149" }}/>
+            <span className="text-[7px]" style={{ color: "#545d68" }}>Ataque</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#3fb950" }}/>
+            <span className="text-[7px]" style={{ color: "#545d68" }}>Normal</span>
+          </div>
+        </div>
       </div>
     </div>
   );

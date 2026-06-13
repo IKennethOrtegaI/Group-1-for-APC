@@ -1,0 +1,260 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║         AI - SISTEMA DE DETECCIÓN DE INTRUSOS (IDS)                         ║
+║         Guía de instalación y ejecución paso a paso                         ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+REQUISITOS DEL SISTEMA
+──────────────────────
+  • Windows 10 / 11 (64-bit)  ← recomendado
+    También funciona en Linux/macOS (omitir paso de Npcap)
+  • Python 3.10 o superior  →  https://www.python.org/downloads/
+    ✔ Durante la instalación marcar "Add Python to PATH"
+  • Node.js 18 o superior   →  https://nodejs.org/en/download
+  • Git                      →  https://git-scm.com/downloads
+  • Npcap (solo Windows)     →  https://npcap.com/#download
+    ✔ Durante la instalación marcar "Install Npcap in WinPcap API-compatible Mode"
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 1 — CLONAR EL REPOSITORIO
+════════════════════════════════════════════════════════════════════════════════
+
+  Abre una terminal (CMD o PowerShell) y ejecuta:
+
+    git clone https://github.com/kennethortega-myt/IDS_Project.git
+    cd IDS_Project
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 2 — CONFIGURAR EL BACKEND (Python / FastAPI)
+════════════════════════════════════════════════════════════════════════════════
+
+  2.1  Entrar a la carpeta del backend:
+
+         cd backend
+
+  2.2  Crear entorno virtual:
+
+         python -m venv venv
+
+  2.3  Activar el entorno virtual:
+
+         Windows:    venv\Scripts\activate
+         Linux/Mac:  source venv/bin/activate
+
+       Deberías ver (venv) al inicio de la línea de comandos.
+
+  2.4  Instalar dependencias:
+
+         pip install -r requirements.txt
+
+       Esto instalará: FastAPI, Uvicorn, Scapy, scikit-learn, XGBoost,
+       SQLAlchemy, pandas, numpy, psutil, joblib, entre otros.
+
+  2.5  (Opcional) Crear archivo de configuración .env:
+
+       Crea el archivo  backend/.env  con este contenido:
+
+         APP_NAME=AI-IDS
+         VERSION=1.0.0
+         DATABASE_URL=sqlite:///./ids.db
+
+       Si no lo creas, el sistema usará valores por defecto automáticamente.
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 3 — CONFIGURAR EL FRONTEND (React / Vite)
+════════════════════════════════════════════════════════════════════════════════
+
+  3.1  Abrir una NUEVA terminal y entrar a la carpeta del frontend:
+
+         cd IDS_Project/frontend
+
+  3.2  Instalar dependencias de Node:
+
+         npm install
+
+  3.3  (Opcional) Configurar la URL del backend:
+
+       Si el backend corre en un puerto diferente al 8000, crea el archivo
+       frontend/.env.local  con:
+
+         VITE_API_URL=http://localhost:8000
+
+       Por defecto ya apunta a http://localhost:8000, así que este paso
+       solo es necesario si cambias el puerto.
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 4 — EJECUTAR LA APLICACIÓN
+════════════════════════════════════════════════════════════════════════════════
+
+  Necesitas DOS terminales abiertas al mismo tiempo.
+
+  ── TERMINAL 1: Backend ─────────────────────────────────────────────────────
+
+    IMPORTANTE: En Windows, ejecutar como ADMINISTRADOR para captura de paquetes.
+    (Clic derecho en PowerShell → "Ejecutar como administrador")
+
+      cd IDS_Project/backend
+      venv\Scripts\activate          (Windows)
+      source venv/bin/activate       (Linux/Mac)
+
+      uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+    Verás en consola:
+      INFO:     Application startup complete.
+      INFO:     Uvicorn running on http://0.0.0.0:8000
+
+  ── TERMINAL 2: Frontend ────────────────────────────────────────────────────
+
+      cd IDS_Project/frontend
+      npm run dev
+
+    Verás en consola:
+      VITE v6.x.x  ready in xxx ms
+      ➜  Local:   http://localhost:5173/
+
+  ── ABRIR EN EL NAVEGADOR ───────────────────────────────────────────────────
+
+    Abre tu navegador y ve a:   http://localhost:5173
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 5 — ENTRENAR LOS MODELOS (primera vez)
+════════════════════════════════════════════════════════════════════════════════
+
+  Los modelos pre-entrenados ya están incluidos en la carpeta backend/models/.
+  Si deseas re-entrenarlos desde cero:
+
+  5.1  En la interfaz web, haz clic en "Entrenar" en la barra superior.
+  5.2  Selecciona el dataset: NSL-KDD o CICIDS2017 ★ (recomendado).
+  5.3  Selecciona el algoritmo: Random Forest, XGBoost, SVM o MLP.
+  5.4  Haz clic en "Iniciar Entrenamiento".
+
+  El sistema descarga automáticamente los datasets al arrancar el servidor.
+  El entrenamiento puede tardar 1-5 minutos según el algoritmo.
+
+  Datasets usados:
+    • NSL-KDD   — 41 features, clásico, datos de 1999
+    • CICIDS2017 — 60 features, tráfico moderno (recomendado para pruebas reales)
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 6 — USAR EL MONITOR IDS (captura en tiempo real)
+════════════════════════════════════════════════════════════════════════════════
+
+  6.1  Haz clic en "Monitor IDS" en la barra superior.
+  6.2  Selecciona el dataset: CICIDS2017 ★ (recomendado).
+  6.3  Selecciona la interfaz de red:
+         • Para tráfico WiFi:   "WiFi" o "Wireless LAN Adapter Wi-Fi"
+         • Para tráfico LAN:    "Ethernet"
+         • Para VM (VMware):    "VMware Virtual Ethernet Adapter for VMnet1"
+  6.4  Haz clic en "Iniciar Captura".
+
+  El sistema capturará paquetes en tiempo real y clasificará cada conexión
+  como Normal o Ataque con su tipo (Port Scan, DoS, SYN Flood, etc.).
+
+  NOTA: En Windows se requiere ejecutar el backend como Administrador para
+  que Scapy pueda capturar paquetes con Npcap.
+
+
+════════════════════════════════════════════════════════════════════════════════
+ PASO 7 — SIMULACIÓN DE ATAQUES (opcional, para pruebas)
+════════════════════════════════════════════════════════════════════════════════
+
+  Para probar la detección necesitas una máquina atacante. Se recomienda
+  una VM con Kali Linux conectada por VMnet1 (modo Host-only en VMware).
+
+  Desde Kali Linux:
+
+    Port Scan:
+      sudo nmap -sS <IP_WINDOWS>
+
+    SYN Flood:
+      sudo hping3 -S -p 80 --flood <IP_WINDOWS>
+
+    UDP Flood:
+      sudo hping3 --udp -p 53 --flood <IP_WINDOWS>
+
+  La IP de Windows en VMnet1 suele ser 192.168.135.1
+  Verificar con:  ipconfig  (buscar "VMware Network Adapter VMnet1")
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ESTRUCTURA DEL PROYECTO
+════════════════════════════════════════════════════════════════════════════════
+
+  IDS_Project/
+  ├── backend/
+  │   ├── app/
+  │   │   ├── api/routes/        ← Endpoints REST (FastAPI)
+  │   │   │   ├── capture.py     ← Captura en tiempo real
+  │   │   │   ├── analytics.py   ← Estadísticas históricas
+  │   │   │   └── models.py      ← Entrenamiento y predicción
+  │   │   ├── db/
+  │   │   │   └── database.py    ← SQLite (SQLAlchemy)
+  │   │   ├── ml/
+  │   │   │   ├── capture.py     ← Scapy + extracción de features + clasificación
+  │   │   │   ├── trainer.py     ← Entrenamiento de modelos
+  │   │   │   └── preprocessor.py← Preprocesamiento de datasets
+  │   │   └── main.py            ← Punto de entrada FastAPI
+  │   ├── models/                ← Modelos .pkl pre-entrenados
+  │   └── requirements.txt
+  │
+  └── frontend/
+      └── src/
+          ├── components/
+          │   ├── LiveCapture.jsx  ← Monitor IDS en tiempo real
+          │   ├── Analytics.jsx    ← Indicadores históricos (5m, 1h, 1d...)
+          │   ├── ThreatRadar.jsx  ← Radar de amenazas
+          │   ├── LiveTerminal.jsx ← Log del sistema
+          │   ├── TrainPanel.jsx   ← Panel de entrenamiento
+          │   └── NetworkMap.jsx   ← Topología de red
+          └── App.jsx
+
+
+════════════════════════════════════════════════════════════════════════════════
+ SOLUCIÓN DE PROBLEMAS FRECUENTES
+════════════════════════════════════════════════════════════════════════════════
+
+  ❌ "Scapy no disponible" en el Monitor IDS
+     → Instala Npcap desde https://npcap.com/#download
+     → Marca "WinPcap API-compatible mode" durante la instalación
+     → Ejecuta el backend como Administrador
+
+  ❌ Error al instalar requirements.txt
+     → Asegúrate de tener Python 3.10+ y el venv activado
+     → En Windows puede requerir: pip install --upgrade pip
+
+  ❌ El frontend no carga / CORS error
+     → Verifica que el backend esté corriendo en el puerto 8000
+     → Verifica que no haya firewall bloqueando localhost:8000
+
+  ❌ No se detectan ataques desde una VM
+     → Cambia la interfaz del Monitor IDS a la de la red de la VM
+     → En VMware: usa "VMware Virtual Ethernet Adapter for VMnet1"
+     → Ejecuta el backend como Administrador
+
+  ❌ El entrenamiento falla / no hay datos
+     → El backend descarga los datasets automáticamente al iniciar
+     → Verifica conexión a internet en el primer arranque
+     → Los archivos se guardan en backend/data/raw/
+
+
+════════════════════════════════════════════════════════════════════════════════
+ TECNOLOGÍAS UTILIZADAS
+════════════════════════════════════════════════════════════════════════════════
+
+  Backend:   Python 3.10+ · FastAPI · Uvicorn · Scapy · scikit-learn
+             XGBoost · SQLAlchemy · pandas · numpy · Npcap (Windows)
+
+  Frontend:  React 18 · Vite · Tailwind CSS · Recharts · Lucide Icons
+
+  Datasets:  NSL-KDD (1999) · CICIDS2017 (Canadian Institute for Cybersecurity)
+
+  Modelos:   Random Forest · XGBoost · SVM · MLP (Red Neuronal)
+             Detección híbrida: ML + heurísticas de flujo
+
+
+════════════════════════════════════════════════════════════════════════════════

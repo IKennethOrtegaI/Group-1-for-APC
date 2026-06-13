@@ -1,99 +1,265 @@
+/**
+ * LiveTerminal — log en tiempo real del IDS.
+ * Solo datos reales de /capture/results y /capture/status.
+ * Sin simulaciones.
+ */
 import { useEffect, useRef, useState } from "react";
-import { getAlerts } from "../api/client";
+import { Terminal } from "lucide-react";
 
-const PREFIX = { ALERTA: "#f85149", INFO: "#3fb950", WARN: "#d29922", SYS: "#58a6ff" };
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-const SYS_LINES = [
-  { type: "SYS",   msg: "IDS Engine v1.0.0 iniciado correctamente" },
-  { type: "SYS",   msg: "Modelos cargados: Random Forest + XGBoost" },
-  { type: "SYS",   msg: "Escuchando tráfico en interfaz eth0..." },
-  { type: "SYS",   msg: "Base de datos SQLite inicializada" },
-  { type: "INFO",  msg: "Sistema de detección ACTIVO — monitoreo continuo" },
-];
+const LEVEL_COLOR = {
+  SYS:    "#58a6ff",
+  INFO:   "#3fb950",
+  WARN:   "#d29922",
+  ALERT:  "#f85149",
+  NORMAL: "#3fb950",
+};
 
-export default function LiveTerminal({ newAttack }) {
-  const [lines, setLines] = useState(SYS_LINES.map((l, i) => ({ ...l, id: i, ts: formatTs(new Date()) })));
-  const bottomRef = useRef(null);
-  const seenIds = useRef(new Set());
-  const prevAttack = useRef(null);
-  let idSeq = useRef(100);
+const ATK_SHORT = {
+  "DoS/DDoS":    "DOS",
+  "DDoS":        "DDoS",
+  "SYN Flood":   "SYN",
+  "Flood":       "FLD",
+  "Port Scan":   "SCN",
+  "UDP Scan":    "UDP",
+  "ICMP Scan":   "ICM",
+  "Brute Force": "BRF",
+  "Web Attack":  "WEB",
+  "DNS Abuse":   "DNS",
+  "Exfiltración":"EXF",
+  "Anomalía":    "ANO",
+};
 
-  function formatTs(d) {
-    return d.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  }
+let _idSeq = 1;
+function mkLine(level, msg, detail = null) {
+  return {
+    id:     _idSeq++,
+    level,
+    msg,
+    detail,
+    ts: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  };
+}
 
-  const push = (type, msg) => {
-    setLines(prev => [...prev.slice(-60), { id: ++idSeq.current, type, msg, ts: formatTs(new Date()) }]);
+function fmtBytes(n) {
+  if (!n || n === 0) return "0B";
+  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)}MB`;
+  if (n >= 1024)      return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+
+export default function LiveTerminal() {
+  const [lines,   setLines]   = useState([
+    mkLine("SYS",  "IDS Engine inicializado"),
+    mkLine("SYS",  "Esperando inicio de captura de paquetes..."),
+  ]);
+  const [filter,  setFilter]  = useState("ALL");   // ALL | ALERT | INFO | SYS
+  const [paused,  setPaused]  = useState(false);
+  const [running, setRunning] = useState(false);
+  const bottomRef  = useRef(null);
+  const seenRef    = useRef(new Set());
+  const pausedRef  = useRef(false);
+  const runningRef = useRef(false);
+
+  pausedRef.current  = paused;
+  runningRef.current = running;
+
+  const push = (...newLines) => {
+    if (pausedRef.current) return;
+    setLines(prev => [...prev.slice(-120), ...newLines]);
   };
 
-  // Poll real alerts
+  // Polling de captura real
   useEffect(() => {
-    const load = async () => {
+    let prevRunning = false;
+
+    const poll = async () => {
       try {
-        const r = await getAlerts(20);
-        r.data.forEach(a => {
-          if (!seenIds.current.has(a.id)) {
-            seenIds.current.add(a.id);
-            const model = a.model_name === "random_forest" ? "RF" : "XGB";
-            if (a.prediction === "Attack") {
-              push("ALERTA", `Ataque detectado por ${model} — Confianza: ${(a.confidence * 100).toFixed(1)}% [${a.dataset?.toUpperCase()}]`);
-            } else {
-              push("INFO", `Tráfico normal verificado por ${model} — ${(a.confidence * 100).toFixed(1)}% seguro`);
+        const [statusRes, resultsRes] = await Promise.all([
+          fetch(`${API}/capture/status`),
+          fetch(`${API}/capture/results?limit=80`),
+        ]);
+        const status  = await statusRes.json();
+        const results = await resultsRes.json();
+
+        const nowRunning = status.running ?? false;
+        setRunning(nowRunning);
+
+        // Cambio de estado de captura
+        if (nowRunning && !prevRunning) {
+          push(
+            mkLine("SYS",  "━━━ CAPTURA INICIADA ━━━"),
+            mkLine("SYS",  `Interfaz activa · escuchando paquetes en tiempo real`),
+            mkLine("INFO", `Flujos activos: 0 · ataques: 0`),
+          );
+        } else if (!nowRunning && prevRunning) {
+          const s = status.stats ?? {};
+          push(
+            mkLine("SYS", "━━━ CAPTURA DETENIDA ━━━"),
+            mkLine("SYS", `Resumen: ${s.total ?? 0} flujos · ${s.attacks ?? 0} ataques · ${s.normal ?? 0} normales`),
+          );
+        }
+        prevRunning = nowRunning;
+
+        // Procesar conexiones nuevas
+        const conns = results.connections ?? [];
+        const toLog = [];
+
+        for (const conn of conns) {
+          const key = `${conn.ts}|${conn.src}|${conn.dst}`;
+          if (seenRef.current.has(key)) continue;
+          seenRef.current.add(key);
+
+          const proto = (conn.protocol ?? "").toUpperCase();
+          const pct   = conn.confidence != null ? `${(conn.confidence * 100).toFixed(0)}%` : "";
+          const bytes = `↑${fmtBytes(conn.src_bytes)} ↓${fmtBytes(conn.dst_bytes)}`;
+          const dur   = conn.duration ? `${conn.duration.toFixed(2)}s` : "";
+
+          if (conn.prediction === "Attack") {
+            const atk   = conn.attack_type ?? "Anomalía";
+            const short = ATK_SHORT[atk] ?? atk.slice(0, 3).toUpperCase();
+            toLog.push(mkLine(
+              "ALERT",
+              `[${short}] ${conn.src} → ${conn.dst}`,
+              `${proto} · confianza: ${pct} · ${bytes}${dur ? " · " + dur : ""} · ${conn.traffic_desc ?? ""}`,
+            ));
+          } else {
+            // Normales: log cada 3 para no saturar (pero siempre los primeros)
+            if (seenRef.current.size <= 5 || seenRef.current.size % 3 === 0) {
+              toLog.push(mkLine(
+                "NORMAL",
+                `[OK] ${conn.src} → ${conn.dst}`,
+                `${proto} · ${pct} · ${bytes}${conn.traffic_desc ? " · " + conn.traffic_desc : ""}`,
+              ));
             }
           }
-        });
-      } catch {}
+        }
+
+        // Ordenar: ataques primero dentro del batch
+        toLog.sort((a, b) => (a.level === "ALERT" ? -1 : 1) - (b.level === "ALERT" ? -1 : 1) || 0);
+
+        if (toLog.length > 0) push(...toLog.slice(0, 20));
+
+        // Actualizar stat line periódicamente si captura activa
+        if (nowRunning) {
+          const s = status.stats ?? {};
+          const rate = s.total > 0 ? ((s.attacks / s.total) * 100).toFixed(1) : "0.0";
+          push(mkLine("SYS", `Stats · total: ${s.total} · ataques: ${s.attacks} · rate: ${rate}%`));
+        }
+      } catch { /* backend no disponible */ }
     };
-    load();
-    const iv = setInterval(load, 4000);
+
+    poll();
+    const iv = setInterval(poll, 2500);
     return () => clearInterval(iv);
   }, []);
 
-  // React to network map attack events
-  useEffect(() => {
-    if (!newAttack || newAttack === prevAttack.current) return;
-    prevAttack.current = newAttack;
-    const targets = { ep1: "CLIENT-A", ep2: "CLIENT-B", db: "DATABASE", app: "APP-SRV", dmz1: "WEB-DMZ", dmz2: "MAIL-DMZ" };
-    const t = targets[newAttack.target] ?? newAttack.target.toUpperCase();
-    push("WARN",  `Paquetes maliciosos detectados en ruta → ${t}`);
-    setTimeout(() => push("ALERTA", `INTRUSIÓN CONFIRMADA en ${t} — activando protocolo de bloqueo`), 800);
-    setTimeout(() => push("SYS",   `Regla de firewall actualizada: DROP src=INET dst=${t}`), 1600);
-    setTimeout(() => push("INFO",  `Nodo ${t} restaurado — tráfico bloqueado en perímetro`), 3200);
-  }, [newAttack]);
-
   // Auto-scroll
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lines]);
+    if (!paused) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines, paused]);
+
+  const visible = filter === "ALL"
+    ? lines
+    : lines.filter(l =>
+        filter === "ALERT"  ? l.level === "ALERT"
+      : filter === "INFO"   ? l.level === "NORMAL" || l.level === "INFO"
+      : /* SYS */             l.level === "SYS"
+      );
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] font-bold uppercase tracking-[0.15em]" style={{ color: "#58a6ff" }}>
-          Terminal · Log del Sistema
-        </span>
-        <div className="flex gap-1">
-          {["#f85149","#d29922","#3fb950"].map(c => (
-            <span key={c} className="w-2 h-2 rounded-full" style={{ background: c }}/>
+    <div className="flex flex-col h-full min-h-0">
+
+      {/* Header */}
+      <div className="shrink-0 flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5">
+          <Terminal size={11} style={{ color: "#58a6ff" }}/>
+          <span className="text-[10px] font-bold uppercase tracking-[0.15em]" style={{ color: "#58a6ff" }}>
+            Log IDS
+          </span>
+          {running && (
+            <span className="w-1.5 h-1.5 rounded-full ml-1"
+              style={{ background: "#3fb950", boxShadow: "0 0 4px #3fb950", animation: "flicker 2s infinite" }}/>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {/* Filtros */}
+          {[["ALL","Todos"],["ALERT","⚠ ATK"],["INFO","✓ OK"],["SYS","SYS"]].map(([f, label]) => (
+            <button key={f} onClick={() => setFilter(f)}
+              className="px-1.5 py-0.5 rounded text-[8px] font-semibold transition"
+              style={{
+                background: filter === f ? "rgba(88,166,255,0.12)" : "transparent",
+                color: filter === f ? "#58a6ff" : "#3a4455",
+                border: `1px solid ${filter === f ? "#58a6ff33" : "transparent"}`,
+              }}>
+              {label}
+            </button>
           ))}
+          {/* Pausa */}
+          <button onClick={() => setPaused(p => !p)}
+            className="px-1.5 py-0.5 rounded text-[8px] font-semibold transition ml-1"
+            style={{
+              background: paused ? "rgba(210,153,34,0.12)" : "transparent",
+              color: paused ? "#d29922" : "#3a4455",
+              border: `1px solid ${paused ? "#d2992233" : "transparent"}`,
+            }}>
+            {paused ? "▶ Reanudar" : "⏸ Pausar"}
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-lg p-3 font-mono text-[11px] leading-relaxed"
-        style={{ background: "#04070a", border: "1px solid #1c2333", minHeight: 0 }}>
-        {lines.map(l => (
-          <div key={l.id} className="fade-up flex gap-2 py-0.5">
-            <span style={{ color: "#545d68", flexShrink: 0 }}>[{l.ts}]</span>
-            <span style={{ color: PREFIX[l.type] ?? "#cdd9e5", fontWeight: 700, flexShrink: 0 }}>{l.type}</span>
-            <span style={{ color: l.type === "ALERTA" ? "#f8514988" : "#8b949e" }}>{l.msg}</span>
+      {/* Terminal body */}
+      <div className="flex-1 overflow-y-auto rounded-lg p-2.5 font-mono text-[10px] leading-relaxed min-h-0"
+        style={{ background: "#04070a", border: "1px solid #1c2333" }}>
+
+        {visible.length === 0 && (
+          <div className="text-center py-4" style={{ color: "#3a4455" }}>
+            Sin eventos para este filtro
+          </div>
+        )}
+
+        {visible.map(l => (
+          <div key={l.id} className="py-0.5 group">
+            <div className="flex gap-1.5 items-baseline">
+              <span style={{ color: "#3a4455", flexShrink: 0, fontSize: "9px" }}>{l.ts}</span>
+              <span className="font-bold text-[8px] px-1 py-px rounded"
+                style={{
+                  background: `${LEVEL_COLOR[l.level] ?? "#8b949e"}18`,
+                  color: LEVEL_COLOR[l.level] ?? "#8b949e",
+                  flexShrink: 0,
+                }}>
+                {l.level === "NORMAL" ? "OK" : l.level}
+              </span>
+              <span style={{ color: l.level === "ALERT" ? "#f85149" : l.level === "SYS" ? "#58a6ff" : "#cdd9e5" }}>
+                {l.msg}
+              </span>
+            </div>
+            {l.detail && (
+              <div className="ml-20 text-[8px] mt-0.5" style={{ color: "#545d68" }}>
+                └ {l.detail}
+              </div>
+            )}
           </div>
         ))}
-        <div className="flex items-center gap-1 mt-1">
-          <span style={{ color: "#3fb950" }}>●</span>
-          <span style={{ color: "#545d68" }}>_</span>
-          <span className="inline-block w-2 h-3 ml-0.5" style={{ background: "#3fb950", animation: "flicker 1.2s step-start infinite" }}/>
+
+        {/* Cursor */}
+        <div className="flex items-center gap-1 mt-1 py-0.5">
+          <span style={{ color: "#3fb950" }}>$</span>
+          <span className="inline-block w-1.5 h-3"
+            style={{ background: "#3fb950", animation: "flicker 1.2s step-start infinite", opacity: 0.8 }}/>
         </div>
         <div ref={bottomRef}/>
+      </div>
+
+      {/* Footer stats */}
+      <div className="shrink-0 flex items-center justify-between mt-1.5 px-1">
+        <span className="text-[8px]" style={{ color: "#3a4455" }}>
+          {visible.length} entradas · {paused ? "⏸ pausado" : "actualización cada 2.5s"}
+        </span>
+        <span className="text-[8px]" style={{ color: running ? "#3fb950" : "#3a4455" }}>
+          {running ? "● captura activa" : "○ sin captura"}
+        </span>
       </div>
     </div>
   );

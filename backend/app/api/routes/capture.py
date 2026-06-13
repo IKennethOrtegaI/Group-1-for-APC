@@ -51,7 +51,7 @@ def start(req: StartRequest):
     except FileNotFoundError:
         raise HTTPException(404, f"Modelo {req.model_name}/{req.dataset} no entrenado. Entrena primero.")
 
-    cap.start_capture(req.iface, artifact)
+    cap.start_capture(req.iface, artifact, dataset=req.dataset)
     return {"status": "started", "iface": req.iface,
             "model": req.model_name, "dataset": req.dataset}
 
@@ -84,17 +84,19 @@ def results(limit: int = 50):
     conns = []
     for r in reversed(records):
         conns.append({
-            "ts":          r.ts,
-            "src":         f"{r.src_ip}:{r.src_port}",
-            "dst":         f"{r.dst_ip}:{r.dst_port}",
-            "protocol":    r.protocol,
-            "service":     r.service,
-            "flag":        r.flag,
-            "duration":    r.duration,
-            "src_bytes":   r.src_bytes,
-            "dst_bytes":   r.dst_bytes,
-            "prediction":  r.prediction,
-            "confidence":  r.confidence,
+            "ts":           r.ts,
+            "src":          f"{r.src_ip}:{r.src_port}",
+            "dst":          f"{r.dst_ip}:{r.dst_port}",
+            "protocol":     r.protocol,
+            "service":      r.service,
+            "flag":         r.flag,
+            "duration":     r.duration,
+            "src_bytes":    r.src_bytes,
+            "dst_bytes":    r.dst_bytes,
+            "prediction":   r.prediction,
+            "confidence":   r.confidence,
+            "attack_type":  r.attack_type,
+            "traffic_desc": r.traffic_desc,
         })
     return {"connections": conns, "stats": session.stats}
 
@@ -118,18 +120,20 @@ async def stream():
                 last_count = len(records)
                 for r in new:
                     payload = json.dumps({
-                        "type": "connection",
-                        "ts":         r.ts,
-                        "src":        f"{r.src_ip}:{r.src_port}",
-                        "dst":        f"{r.dst_ip}:{r.dst_port}",
-                        "protocol":   r.protocol,
-                        "service":    r.service,
-                        "flag":       r.flag,
-                        "duration":   r.duration,
-                        "src_bytes":  r.src_bytes,
-                        "dst_bytes":  r.dst_bytes,
-                        "prediction": r.prediction,
-                        "confidence": r.confidence,
+                        "type":        "connection",
+                        "ts":          r.ts,
+                        "src":         f"{r.src_ip}:{r.src_port}",
+                        "dst":         f"{r.dst_ip}:{r.dst_port}",
+                        "protocol":    r.protocol,
+                        "service":     r.service,
+                        "flag":        r.flag,
+                        "duration":    r.duration,
+                        "src_bytes":   r.src_bytes,
+                        "dst_bytes":   r.dst_bytes,
+                        "prediction":  r.prediction,
+                        "confidence":  r.confidence,
+                        "attack_type": r.attack_type,
+                        "traffic_desc": r.traffic_desc,
                     })
                     yield f"data: {payload}\n\n"
             else:
